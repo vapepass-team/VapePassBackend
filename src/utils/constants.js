@@ -49,3 +49,10 @@ export const SETUP_REQUEST_STATUS = {
   COMPLETED: 'Completed',
   CANCELLED: 'Cancelled',
 };
+
+/** Public pricing / Contact Us lead lifecycle */
+export const CONTACT_LEAD_STATUS = {
+  NEW: 'New',
+  CONTACTED: 'Contacted',
+  CLOSED: 'Closed',
+};

@@ -86,3 +86,49 @@ export const updateSetupRequestStatusValidator = [
       `Status must be one of: ${Object.values(SETUP_REQUEST_STATUS).join(', ')}`
     ),
 ];
+
+export const createContactLeadValidator = [
+  body('storeName')
+    .customSanitizer(stripTags)
+    .notEmpty()
+    .withMessage('Store name is required')
+    .isLength({ max: 120 })
+    .withMessage('Store name cannot exceed 120 characters'),
+
+  body('ownerName')
+    .customSanitizer(stripTags)
+    .notEmpty()
+    .withMessage("Owner's name is required")
+    .isLength({ max: 120 })
+    .withMessage("Owner's name cannot exceed 120 characters"),
+
+  body('email')
+    .trim()
+    .notEmpty()
+    .withMessage('Email is required')
+    .isEmail()
+    .withMessage('Please provide a valid email address')
+    .normalizeEmail()
+    .isLength({ max: 254 })
+    .withMessage('Email cannot exceed 254 characters'),
+
+  body('phone')
+    .trim()
+    .notEmpty()
+    .withMessage('Phone number is required')
+    .isLength({ min: 7, max: 40 })
+    .withMessage('Phone number must be between 7 and 40 characters')
+    .matches(/^[\d\s+\-().]+$/)
+    .withMessage('Please provide a valid phone number'),
+
+  body('startDate')
+    .optional({ values: 'falsy' })
+    .isISO8601()
+    .withMessage('Please provide a valid start date'),
+
+  body('message')
+    .optional({ values: 'falsy' })
+    .customSanitizer(stripTags)
+    .isLength({ max: 2000 })
+    .withMessage('Message cannot exceed 2000 characters'),
+];

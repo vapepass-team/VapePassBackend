@@ -410,3 +410,118 @@ export function buildSetupRequestAdminEmail({
 
   return { subject, text, html };
 }
+
+/**
+ * Customer confirmation after pricing Contact Us submission.
+ */
+export function buildContactLeadCustomerEmail({
+  ownerName,
+  storeName,
+  startDate,
+}) {
+  const safeName = escapeHtml(ownerName || 'there');
+  const safeStore = escapeHtml(storeName || 'Your store');
+  const startLabel = startDate ? formatDate(startDate) : 'Not specified';
+  const subject = 'We received your VapePass inquiry';
+
+  const text = [
+    `Hello ${ownerName || 'there'},`,
+    '',
+    'Thank you for contacting VapePass.',
+    '',
+    'We received your inquiry and our team will reach out shortly to help get your store set up.',
+    '',
+    `Store: ${storeName || 'Your store'}`,
+    `Preferred start: ${startLabel}`,
+    '',
+    'Thank you for choosing VapePass.',
+    '',
+    'Best Regards,',
+    'The VapePass Team',
+  ].join('\n');
+
+  const html = wrapEmailLayout({
+    title: 'Contact inquiry received',
+    preheader: 'We received your VapePass contact request.',
+    bodyHtml: `
+      <h1 style="margin:0 0 12px;font-size:22px;color:${BRAND.ink};">Thanks for reaching out</h1>
+      <p style="margin:0 0 16px;color:${BRAND.muted};font-size:15px;line-height:1.6;">
+        Hello ${safeName},
+      </p>
+      <p style="margin:0 0 16px;color:${BRAND.muted};font-size:15px;line-height:1.6;">
+        Thank you for contacting VapePass. We received your inquiry and our team will reach out shortly.
+      </p>
+      <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:${BRAND.bg};border-radius:12px;">
+        <tr><td style="padding:14px 18px;font-size:14px;color:${BRAND.muted};">Store<br/><strong style="color:${BRAND.ink};">${safeStore}</strong></td></tr>
+        <tr><td style="padding:14px 18px;font-size:14px;color:${BRAND.muted};border-top:1px solid ${BRAND.border};">Preferred start<br/><strong style="color:${BRAND.ink};">${escapeHtml(startLabel)}</strong></td></tr>
+      </table>
+      <p style="margin:20px 0 0;color:${BRAND.muted};font-size:15px;line-height:1.6;">
+        Thank you for choosing VapePass.
+      </p>
+    `,
+  });
+
+  return { subject, text, html };
+}
+
+/**
+ * Admin notification for a new pricing Contact Us lead.
+ */
+export function buildContactLeadAdminEmail({
+  ownerName,
+  storeName,
+  email,
+  phone,
+  startDate,
+  message,
+  submittedAt,
+}) {
+  const submitted = formatDateTime(submittedAt || new Date());
+  const startLabel = startDate ? formatDate(startDate) : 'Not specified';
+  const safe = {
+    ownerName: escapeHtml(ownerName || '—'),
+    storeName: escapeHtml(storeName || '—'),
+    email: escapeHtml(email || '—'),
+    phone: escapeHtml(phone || '—'),
+    startDate: escapeHtml(startLabel),
+    message: escapeHtml(message || '—'),
+    submitted: escapeHtml(submitted),
+  };
+
+  const subject = 'New VapePass Contact Inquiry';
+  const text = [
+    'New VapePass Contact Inquiry',
+    '',
+    `Owner Name: ${ownerName || '—'}`,
+    `Store Name: ${storeName || '—'}`,
+    `Email: ${email || '—'}`,
+    `Phone Number: ${phone || '—'}`,
+    `Preferred start: ${startLabel}`,
+    `Message: ${message || '—'}`,
+    `Submission Date & Time: ${submitted}`,
+    '',
+    'Please follow up during business hours.',
+  ].join('\n');
+
+  const html = wrapEmailLayout({
+    title: 'New Contact Inquiry',
+    preheader: `${ownerName || 'A prospect'} submitted the pricing contact form.`,
+    bodyHtml: `
+      <h1 style="margin:0 0 12px;font-size:22px;color:${BRAND.ink};">New Contact Inquiry</h1>
+      <p style="margin:0 0 20px;color:${BRAND.muted};font-size:15px;line-height:1.6;">
+        Someone submitted the pricing Contact Us form. Details below:
+      </p>
+      <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:${BRAND.bg};border-radius:12px;">
+        <tr><td style="padding:14px 18px;font-size:14px;color:${BRAND.muted};">Owner Name<br/><strong style="color:${BRAND.ink};">${safe.ownerName}</strong></td></tr>
+        <tr><td style="padding:14px 18px;font-size:14px;color:${BRAND.muted};border-top:1px solid ${BRAND.border};">Store Name<br/><strong style="color:${BRAND.ink};">${safe.storeName}</strong></td></tr>
+        <tr><td style="padding:14px 18px;font-size:14px;color:${BRAND.muted};border-top:1px solid ${BRAND.border};">Email<br/><strong style="color:${BRAND.ink};">${safe.email}</strong></td></tr>
+        <tr><td style="padding:14px 18px;font-size:14px;color:${BRAND.muted};border-top:1px solid ${BRAND.border};">Phone Number<br/><strong style="color:${BRAND.ink};">${safe.phone}</strong></td></tr>
+        <tr><td style="padding:14px 18px;font-size:14px;color:${BRAND.muted};border-top:1px solid ${BRAND.border};">Preferred start<br/><strong style="color:${BRAND.ink};">${safe.startDate}</strong></td></tr>
+        <tr><td style="padding:14px 18px;font-size:14px;color:${BRAND.muted};border-top:1px solid ${BRAND.border};">Message<br/><strong style="color:${BRAND.ink};white-space:pre-wrap;">${safe.message}</strong></td></tr>
+        <tr><td style="padding:14px 18px;font-size:14px;color:${BRAND.muted};border-top:1px solid ${BRAND.border};">Submission Date &amp; Time<br/><strong style="color:${BRAND.ink};">${safe.submitted}</strong></td></tr>
+      </table>
+    `,
+  });
+
+  return { subject, text, html };
+}

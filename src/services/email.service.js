@@ -5,6 +5,8 @@ import {
   buildRenewalReminderEmail,
   buildSetupRequestAdminEmail,
   buildSetupRequestCustomerEmail,
+  buildContactLeadAdminEmail,
+  buildContactLeadCustomerEmail,
   buildSubscriptionActivatedEmail,
   buildSubscriptionPausedEmail,
 } from '../utils/emailTemplates.js';
@@ -391,6 +393,21 @@ export async function sendSetupRequestCustomerEmail(to, payload) {
 export async function sendSetupRequestAdminEmail(to, payload) {
   const email = buildSetupRequestAdminEmail(payload);
   console.info(`[email] Sending admin setup notification → ${to}`);
+  return sendMail({
+    to,
+    ...email,
+    replyTo: payload.email || undefined,
+  });
+}
+
+export async function sendContactLeadCustomerEmail(to, payload) {
+  const email = buildContactLeadCustomerEmail(payload);
+  return sendMail({ to, ...email });
+}
+
+export async function sendContactLeadAdminEmail(to, payload) {
+  const email = buildContactLeadAdminEmail(payload);
+  console.info(`[email] Sending admin contact-lead notification → ${to}`);
   return sendMail({
     to,
     ...email,
