@@ -52,43 +52,43 @@ const router = Router();
  */
 router.post('/register', validate(registerValidator), authController.register);
 
-
-  @swagger
-  /auth/login:
-    post:
-      summary: Log in with email and password
-      tags: [Auth]
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              $ref: '#/components/schemas/LoginInput'
-      responses:
-        200:
-          description: Login successful
-          headers:
-            Set-Cookie:
-              description: HTTP-only refresh token cookie
-              schema:
-                type: string
-          content:
-            application/json:
-              schema:
-                allOf:
-                  - $ref: '#/components/schemas/ApiResponse'
-                  - type: object
-                    properties:
-                      data:
-                        type: object
-                        properties:
-                          user:
-                            $ref: '#/components/schemas/User'
-                          accessToken:
-                            type: string
-        401:
-         description: Invalid credentials
- 
+/**
+*  @swagger
+*  /auth/login:
+*    post:
+*      summary: Log in with email and password
+*      tags: [Auth]
+*      requestBody:
+*        required: true
+*        content:
+*          application/json:
+*            schema:
+*              $ref: '#/components/schemas/LoginInput'
+*      responses:
+*        200:
+*          description: Login successful
+*          headers:
+*            Set-Cookie:
+*              description: HTTP-only refresh token cookie
+*              schema:
+*                type: string
+*          content:
+*            application/json:
+*              schema:
+*                allOf:
+*                  - $ref: '#/components/schemas/ApiResponse'
+*                  - type: object
+*                    properties:
+*                      data:
+*                        type: object
+*                        properties:
+*                          user:
+*                            $ref: '#/components/schemas/User'
+*                          accessToken:
+*                            type: string
+*        401:
+*         description: Invalid credentials
+*/ 
 router.post('/login', validate(loginValidator), authController.login);
 
 /**
