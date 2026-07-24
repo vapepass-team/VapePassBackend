@@ -284,8 +284,10 @@ function isLiquidLike(productType) {
 
 /**
  * Decide whether we can recommend, or what single follow-up to ask.
+ * @param {object} [siteContext] optional store name / website — used only to
+ *   filter fake brand suggestions (never shown as brands themselves).
  */
-export function evaluatePreferenceCompleteness(prefs = {}, inventory = []) {
+export function evaluatePreferenceCompleteness(prefs = {}, inventory = [], siteContext = null) {
   const p = prefs || {};
 
   if (!p.productType) {
@@ -333,10 +335,14 @@ export function evaluatePreferenceCompleteness(prefs = {}, inventory = []) {
 
   // Brand preference — REQUIRED before any recommendation (never skip)
   if (p.brand == null || p.brand === '') {
-    const examples = listInventoryBrands(inventory, p.productType, 5);
+    const examples = listInventoryBrands(inventory, p.productType, 5, siteContext);
     const ask = examples.length
-      ? `Do you have a preferred brand? For example: ${examples.join(', ')}. You can also name another brand in stock, or reply with "No Preference."`
-      : `Do you have a preferred brand for this category? If not, simply reply with "No Preference" and I'll pick the best match from what's in stock.`;
+      ? [
+          'Do you have a preferred brand? For example:',
+          ...examples.map((name) => `• ${name}`),
+          'You can also name another brand in stock, or reply with "No Preference."',
+        ].join('\n')
+      : 'Do you have a preferred brand? If not, you can reply with "No Preference."';
     return {
       ready: false,
       missing: 'brand',
@@ -355,21 +361,174 @@ const BRAND_NO_PREF_RE =
 const FLAVOR_NOT_BRAND_RE =
   /\b(fruit|fruity|ice|iced|icy|sweet|sweeter|dessert|candy|gummy|menthol|mint|minty|mango|berry|berries|citrus|tropical|melon|grape|peach|lemon|lime|orange|strawberry|blueberry|vanilla|tobacco|smooth|cooling|disposable|liquid|juice|accessory)\b/i;
 
+/** Empty / placeholder brand strings scraped into inventory */
+const BRAND_PLACEHOLDER_RE =
+  /^(n\/?a|none|unknown|null|undefined|tbd|n\.a\.?|not available|coming soon|-|—|–|\.)$/i;
+
+/** Test / demo / scaffold values that must never be suggested as brands */
+const BRAND_TEST_RE =
+  /\b(test|demo|sample|dummy|fake|placeholder|asdf|xxx|lorem|ipsum)\b|\(\s*(test|demo|sample)\s*\)/i;
+
+/** Domain / URL shaped values (store website mistaken for a brand) */
+const BRAND_DOMAIN_RE =
+  /https?:\/\/|www\.|\.(com|ca|net|org|io|co|shop|store|dev|local)\b/i;
+
+/** Merchant / storefront labels that are not product brands */
+const BRAND_MERCHANT_RE =
+  /\b(store|shop|official|website|online\s*store|retail(?:er)?|vape\s*shop|my\s*store)\b/i;
+
 /**
- * Top brands in inventory (optionally scoped to a product type).
+ * Normalize a hostname or store label into folded tokens used to block
+ * store/domain lookalikes from brand suggestions.
  */
-export function listInventoryBrands(inventory = [], productType = null, limit = 8) {
-  const counts = new Map();
-  for (const product of inventory) {
-    if (productType && !matchesProductType(product, productType)) continue;
-    const raw = String(product.brand || '').trim();
-    if (!raw || raw.length < 2) continue;
-    if (/^(n\/?a|none|unknown|null|undefined)$/i.test(raw)) continue;
-    if (FLAVOR_NOT_BRAND_RE.test(foldText(raw))) continue;
-    const key = raw.toLowerCase();
-    const prev = counts.get(key);
-    counts.set(key, { name: prev?.name || raw, n: (prev?.n || 0) + 1 });
+function addHostBrandBlocks(blocks, hostOrLabel) {
+  const raw = String(hostOrLabel || '')
+    .trim()
+    .toLowerCase()
+    .replace(/^https?:\/\//, '')
+    .replace(/^www\./, '')
+    .split('/')[0]
+    .trim();
+  if (!raw) return;
+
+  // Full URL host path
+  let host = raw;
+  try {
+    if (raw.includes('.')) {
+      host = new URL(`https://${raw}`).hostname.replace(/^www\./, '');
+    }
+  } catch {
+    host = raw.replace(/^www\./, '');
   }
+
+  if (!host || host === 'localhost' || host === '127.0.0.1') return;
+
+  const labels = host.split('.').filter(Boolean);
+  if (labels.length >= 2 && /\.(com|ca|net|org|io|co|shop|store|dev)$/i.test(host)) {
+    const root = labels.slice(-2).join('.');
+    const name = labels.length >= 3 ? labels[labels.length - 2] : labels[0];
+    blocks.add(foldText(root));
+    blocks.add(foldText(name));
+    blocks.add(foldText(root.replace(/\./g, '')));
+  } else {
+    // Plain store name / single label (e.g. "Test Canvape", "Canvape")
+    const folded = foldText(host);
+    if (folded) blocks.add(folded);
+    const compact = folded.replace(/\s+/g, '');
+    if (compact && compact !== folded) blocks.add(compact);
+    // Drop leading "test/demo" so "Test Canvape" also blocks "Canvape"
+    const stripped = folded.replace(/^(test|demo|sample|fake)\s+/i, '').trim();
+    if (stripped && stripped.length >= 4) {
+      blocks.add(foldText(stripped));
+      blocks.add(foldText(stripped.replace(/\s+/g, '')));
+    }
+  }
+}
+
+/**
+ * Host / site tokens derived from product page URLs + optional store metadata —
+ * used to drop store-name brands that were copied from the merchant domain
+ * or Shopify vendor field instead of a real product brand.
+ */
+function collectSiteBrandBlocklist(inventory = [], siteContext = null) {
+  const blocks = new Set();
+
+  for (const product of inventory) {
+    const url = product?.productUrl || product?.url || product?.sourceUrl || '';
+    if (!url) continue;
+    try {
+      const host = new URL(String(url)).hostname.toLowerCase().replace(/^www\./, '');
+      addHostBrandBlocks(blocks, host);
+    } catch {
+      /* ignore malformed product URLs */
+    }
+  }
+
+  if (siteContext && typeof siteContext === 'object') {
+    addHostBrandBlocks(blocks, siteContext.websiteUrl || siteContext.productPageUrl || '');
+    addHostBrandBlocks(blocks, siteContext.storeName || siteContext.name || '');
+    if (siteContext.allowedHostname) {
+      addHostBrandBlocks(blocks, siteContext.allowedHostname);
+    }
+  }
+
+  return [...blocks].filter((token) => token && token.length >= 4);
+}
+
+/**
+ * True when a scraped brand string is safe to show as a customer-facing suggestion.
+ * Rejects placeholders, test data, domains, flavor words, and store-site lookalikes.
+ */
+export function isDisplayableInventoryBrand(raw, siteBlocks = []) {
+  const brand = String(raw || '').trim();
+  if (!brand || brand.length < 2 || brand.length > 60) return false;
+  if (BRAND_PLACEHOLDER_RE.test(brand)) return false;
+  if (BRAND_TEST_RE.test(brand)) return false;
+  if (BRAND_DOMAIN_RE.test(brand)) return false;
+  if (BRAND_MERCHANT_RE.test(brand)) return false;
+  if (/^[0-9\W_]+$/.test(brand)) return false;
+
+  const folded = foldText(brand);
+  if (!folded || folded.length < 2) return false;
+  if (FLAVOR_NOT_BRAND_RE.test(folded)) return false;
+
+  // Compound test brands like "canvapetest" (no word boundary around "test")
+  const compact = folded.replace(/\s+/g, '');
+  if (/(?:^|[\s_-])(?:test|demo|sample)(?:$|[\s_-])/i.test(folded)) return false;
+  if (/[a-z]{3,}(?:test|demo|sample)$/i.test(compact)) return false;
+  if (/^(?:test|demo|sample)[a-z]{3,}$/i.test(compact)) return false;
+
+  for (const block of siteBlocks) {
+    if (!block || block.length < 4) continue;
+    if (folded === block || compact === block) return false;
+    // "Canvape (Official)", "Canvape Store", "Shop Canvape"
+    if (folded.startsWith(`${block} `) || folded.endsWith(` ${block}`)) return false;
+    if (folded.includes(` ${block} `)) return false;
+    if (
+      compact.startsWith(block) &&
+      /(?:test|demo|sample|shop|store|site|official)$/i.test(compact.slice(block.length))
+    ) {
+      return false;
+    }
+    if (
+      compact.endsWith(block) &&
+      /^(?:test|demo|sample|shop|store|my)/i.test(compact.slice(0, -block.length))
+    ) {
+      return false;
+    }
+  }
+
+  return true;
+}
+
+/**
+ * Top legitimate product brands in scraped inventory (optionally scoped to a product type).
+ * Never invents brands from store/site metadata — only `product.brand` values that pass validation.
+ * @param {object|null} [siteContext] optional { storeName, websiteUrl, productPageUrl, allowedHostname }
+ */
+export function listInventoryBrands(inventory = [], productType = null, limit = 8, siteContext = null) {
+  const list = Array.isArray(inventory) ? inventory : [];
+  const scoped = productType
+    ? list.filter((product) => matchesProductType(product, productType))
+    : list;
+  // Always derive site blocks from the full catalog (+ store metadata) so
+  // store/domain lookalikes are filtered even when a type-scoped slice is thin.
+  const siteBlocks = collectSiteBrandBlocklist(list, siteContext);
+  const counts = new Map();
+
+  for (const product of scoped) {
+    const raw = String(product.brand || '').trim();
+    if (!isDisplayableInventoryBrand(raw, siteBlocks)) continue;
+
+    const key = foldText(raw);
+    if (!key) continue;
+    const prev = counts.get(key);
+    // Prefer the cleanest casing / spacing we've seen for this brand
+    const name =
+      prev?.name && prev.name.length <= raw.length && !/[._]/.test(prev.name) ? prev.name : raw;
+    counts.set(key, { name, n: (prev?.n || 0) + 1 });
+  }
+
   return [...counts.values()]
     .sort((a, b) => b.n - a.n || a.name.localeCompare(b.name))
     .slice(0, limit)
@@ -381,7 +540,7 @@ export function listInventoryBrands(inventory = [], productType = null, limit = 
  * Only call this when answering the brand question (or an explicit brand phrase).
  * @returns {'any'|string|null} canonical brand name, 'any', or null if unresolved
  */
-export function matchBrandPreference(message, inventory = [], productType = null) {
+export function matchBrandPreference(message, inventory = [], productType = null, siteContext = null) {
   const clean = sanitizeUserHint(message);
   const text = foldText(clean);
   if (!text) return null;
@@ -398,7 +557,7 @@ export function matchBrandPreference(message, inventory = [], productType = null
     return null;
   }
 
-  const brands = listInventoryBrands(inventory, productType, 80).filter(
+  const brands = listInventoryBrands(inventory, productType, 80, siteContext).filter(
     (b) => !FLAVOR_NOT_BRAND_RE.test(foldText(b))
   );
   const ranked = [...brands].sort((a, b) => b.length - a.length);
@@ -985,7 +1144,7 @@ export function buildContextualFollowUp(prefs, missing, meta = {}) {
       summary ? `Perfect — ${summary}.` : 'Got it.',
       '',
       meta.defaultAsk ||
-        'Do you have a preferred brand? If not, just say "No Preference."',
+        'Do you have a preferred brand? If not, you can reply with "No Preference."',
     ].join('\n');
   }
 

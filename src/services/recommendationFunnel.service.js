@@ -747,10 +747,23 @@ async function resolvePastBrandSteps(store, session, step, candidateIds, path) {
   return null;
 }
 
+/** Store/site tokens used only to filter fake brand suggestions from inventory. */
+function brandSuggestionSiteContext(store) {
+  if (!store) return null;
+  return {
+    storeName: store.name || null,
+    websiteUrl: store.websiteUrl || null,
+    productPageUrl: store.productPageUrl || null,
+    allowedHostname: store.allowedHostname || null,
+  };
+}
+
 /**
  * Preference-driven turn: extract NLP prefs → ask only what's missing → recommend.
  */
 async function advancePreferenceConversation(store, session, userMessage, inventory) {
+  const siteContext = brandSuggestionSiteContext(store);
+
   // Explicit "another recommendation" / start fresh — never skip discovery
   if (detectsRecommendationRestart(userMessage)) {
     return beginFunnel(store, session, { freshRestart: true });
@@ -815,7 +828,7 @@ async function advancePreferenceConversation(store, session, userMessage, invent
   let contextual = applyContextualAnswer(userMessage, lastAsked, preferences);
   // If lastAsked was lost (older sessions / schema), still resolve ice-style answers
   if (!lastAsked && !contextual.resolved && !contextual.unclear) {
-    const peek = evaluatePreferenceCompleteness(preferences, inventory);
+    const peek = evaluatePreferenceCompleteness(preferences, inventory, siteContext);
     if (peek.missing === 'cooling') {
       contextual = applyContextualAnswer(userMessage, 'cooling', preferences);
     }
@@ -835,14 +848,20 @@ async function advancePreferenceConversation(store, session, userMessage, invent
   // Resolve brand ONLY when answering the brand question (or an explicit "X brand" phrase).
   // Never infer brand from flavor answers like "Mint" — that skipped the brand step.
   if (lastAsked === 'brand') {
-    const brandHit = matchBrandPreference(userMessage, inventory, preferences.productType);
+    const brandHit = matchBrandPreference(
+      userMessage,
+      inventory,
+      preferences.productType,
+      siteContext
+    );
     if (brandHit) {
       preferences.brand = brandHit;
     } else if (preferences.brand && preferences.brand !== 'any') {
       const normalized = matchBrandPreference(
         String(preferences.brand),
         inventory,
-        preferences.productType
+        preferences.productType,
+        siteContext
       );
       if (normalized) {
         preferences.brand = normalized;
@@ -858,7 +877,12 @@ async function advancePreferenceConversation(store, session, userMessage, invent
       preferences.brand = null;
     }
   } else if (looksLikeExplicitBrandPhrase(userMessage)) {
-    const brandHit = matchBrandPreference(userMessage, inventory, preferences.productType);
+    const brandHit = matchBrandPreference(
+      userMessage,
+      inventory,
+      preferences.productType,
+      siteContext
+    );
     if (brandHit && brandHit !== 'any') {
       preferences.brand = brandHit;
     }
@@ -870,7 +894,7 @@ async function advancePreferenceConversation(store, session, userMessage, invent
   }
 
   const hint = preferencesToHint(preferences);
-  const evaluation = evaluatePreferenceCompleteness(preferences, inventory);
+  const evaluation = evaluatePreferenceCompleteness(preferences, inventory, siteContext);
 
   if (!evaluation.ready) {
     const missing = evaluation.missing;
@@ -959,7 +983,12 @@ async function advancePreferenceConversation(store, session, userMessage, invent
 
   if (!pool.length) {
     const liquidAsk = isLiquidLikePreference(preferences.productType);
-    const availableBrands = listInventoryBrands(inventory, preferences.productType, 5);
+    const availableBrands = listInventoryBrands(
+      inventory,
+      preferences.productType,
+      5,
+      siteContext
+    );
     const brandHint = availableBrands.length
       ? `Available brands for this category include: ${availableBrands.join(', ')}.`
       : 'You can also say "No Preference" to browse anything in this category.';
