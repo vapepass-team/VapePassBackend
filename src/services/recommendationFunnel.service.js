@@ -27,6 +27,8 @@ import {
   buildContextualFollowUp,
   matchBrandPreference,
   looksLikeExplicitBrandPhrase,
+  matchesProductType,
+  matchesBrand,
 } from './preferenceConversation.service.js';
 import {
   classifyRecommendationIntent,
@@ -1451,13 +1453,19 @@ export async function finalizeRecommendation(
   options = {}
 ) {
   const products = await loadProductsByIds(productIds);
-  const pool = products.length
-    ? products
-    : await StoreInventory.find({ storeId: store._id, isActive: true }).limit(50).lean();
+  const prefs = session.funnelState?.preferences || {};
+  // Never fall back to a random cross-category slice — empty typed pool means no recommend
+  let pool = products.length ? products : [];
+  if (prefs.productType) {
+    pool = pool.filter((p) => matchesProductType(p, prefs.productType));
+  }
+  if (prefs.brand && prefs.brand !== 'any') {
+    pool = pool.filter((p) => matchesBrand(p, prefs.brand));
+  }
 
   const combinedHint =
     userHint ||
-    preferencesToHint(session.funnelState?.preferences || {}) ||
+    preferencesToHint(prefs) ||
     (session.funnelState?.preferenceHints || []).slice(-3).join(' | ');
 
   const avoidProductIds = (options.avoidProductIds || []).map(String);
@@ -1466,10 +1474,12 @@ export async function finalizeRecommendation(
     ? `${combinedHint} | refine: ${refineHint}`
     : combinedHint;
 
-  const chosen = await pickBestProduct(store, pool, path, rankingHint, {
-    avoidProductIds,
-    preferDifferent: avoidProductIds.length > 0,
-  });
+  const chosen = pool.length
+    ? await pickBestProduct(store, pool, path, rankingHint, {
+        avoidProductIds,
+        preferDifferent: avoidProductIds.length > 0,
+      })
+    : null;
 
   if (chosen) {
     const variantFlow = await startVariantRefine(store, session, chosen, path, {

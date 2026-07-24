@@ -691,6 +691,20 @@ function productHaystack(product) {
     .toLowerCase();
 }
 
+/** Title/category only — used so marketing copy in descriptions cannot flip the product type. */
+function productTitleHaystack(product) {
+  return [
+    product.name,
+    product.flavor,
+    product.variantName,
+    product.category,
+    product.subcategory,
+  ]
+    .filter(Boolean)
+    .join(' ')
+    .toLowerCase();
+}
+
 /** Related catalog types that may satisfy a preference (never cross e-liquid ↔ disposable ↔ device). */
 const TYPE_COMPAT = {
   e_liquid: new Set(['e_liquid']),
@@ -725,12 +739,16 @@ const TYPE_HAYSTACK_RE = {
 /** Strong disposable signals — used to block e-liquid recommendations from mis-typed SKUs */
 function looksLikeDisposable(product) {
   const hay = productHaystack(product);
-  if (TYPE_HAYSTACK_RE.disposable.test(hay)) return true;
+  const title = productTitleHaystack(product);
+  if (TYPE_HAYSTACK_RE.disposable.test(hay) || TYPE_HAYSTACK_RE.disposable.test(title)) return true;
   if (/\b(rechargeable\s*battery|smart\s*display|draw[- ]?activate)\b/i.test(hay) && /\bpuffs?\b/i.test(hay)) {
     return true;
   }
-  // High puff counts in the title are almost always disposables (e.g. MixPro 40K)
-  if (/\b\d{2,3}\s*k\b/i.test(`${product.name || ''} ${product.variantName || ''}`) && /\bpuff/i.test(hay)) {
+  // High puff counts in the title are almost always disposables (e.g. MixPro 40K / Linvo Rave 60000)
+  if (/\b\d{2,3}\s*k\b/i.test(title) && /\bpuff/i.test(hay)) {
+    return true;
+  }
+  if (/\b\d{4,5}\b/.test(title) && /\b(disposable|vape|pro|bar|rave|beyond|puff)\b/i.test(title)) {
     return true;
   }
   return false;
@@ -739,13 +757,17 @@ function looksLikeDisposable(product) {
 /** Empty carts, 510s, coils, tanks — never recommend these as bottled e-liquid */
 function looksLikeHardwareOrEmptyCart(product) {
   const hay = productHaystack(product);
+  const title = productTitleHaystack(product);
   if (
+    /\b(510|empty\s*cart|empty\s*cartridge|cartridges?|atomizers?|tanks?|coils?|drip\s*tips?|glass(?:ware)?|chargers?|batter(?:y|ies)|replacement\s*parts?|replacement\s*pods?|accessories)\b/i.test(
+      title
+    ) ||
     /\b(510|empty\s*cart|empty\s*cartridge|cartridges?|atomizers?|tanks?|coils?|drip\s*tips?|glass(?:ware)?|chargers?|batter(?:y|ies)|replacement\s*parts?|accessories)\b/i.test(
       hay
     )
   ) {
-    // Allow real bottled juice that merely mentions "tank" in marketing copy only if clearly e-liquid
-    if (TYPE_HAYSTACK_RE.e_liquid.test(hay) && !/\b(510|empty\s*cart|empty\s*cartridge|cartridges?)\b/i.test(hay)) {
+    // Allow real bottled juice that merely mentions "tank" in marketing copy only if clearly e-liquid in TITLE
+    if (TYPE_HAYSTACK_RE.e_liquid.test(title) && !/\b(510|empty\s*cart|empty\s*cartridge|cartridges?|replacement\s*pods?)\b/i.test(title)) {
       return false;
     }
     return true;
@@ -758,18 +780,22 @@ const FLAVOR_SIGNAL_RE =
 
 /** Empty mesh / replacement pods — never treat as flavored prefilled pods */
 function looksLikeEmptyPodHardware(product) {
+  const title = productTitleHaystack(product);
   const hay = productHaystack(product);
-  if (/\b\d+(?:\.\d+)?\s*ohm\b/i.test(hay)) return true;
+  if (/\b\d+(?:\.\d+)?\s*ohm\b/i.test(title) || /\b\d+(?:\.\d+)?\s*ohm\b/i.test(hay)) return true;
+  if (/\b(mesh\s*pod|empty\s*pod|replacement\s*pod|refillable\s*pod|pod\s*coil)\b/i.test(title)) {
+    return true;
+  }
   if (/\b(mesh\s*pod|empty\s*pod|replacement\s*pod|refillable\s*pod|pod\s*coil)\b/i.test(hay)) {
     return true;
   }
   // Pod hardware with no flavor / prefilled language
   if (
-    /\bpods?\b/i.test(hay) &&
-    !TYPE_HAYSTACK_RE.prefilled.test(hay) &&
-    !FLAVOR_SIGNAL_RE.test(hay) &&
+    /\bpods?\b/i.test(title) &&
+    !TYPE_HAYSTACK_RE.prefilled.test(title) &&
+    !FLAVOR_SIGNAL_RE.test(title) &&
     !looksLikeDisposable(product) &&
-    /\b(device|kit|mod|ohm|mesh|coil|cartridge|atomizer|system)\b/i.test(hay)
+    /\b(device|kit|mod|ohm|mesh|coil|cartridge|atomizer|system)\b/i.test(title)
   ) {
     return true;
   }
@@ -777,26 +803,60 @@ function looksLikeEmptyPodHardware(product) {
 }
 
 /**
- * Bottled e-liquid signals only — small ml sizes alone (0.5ml / 1ml carts) are NOT e-liquid.
+ * Pod systems / kits / replacement pods — title wins over description copy
+ * that mentions "e-juice capacity".
  */
-function looksLikeELiquid(product) {
-  const hay = productHaystack(product);
-  if (looksLikeHardwareOrEmptyCart(product) || looksLikeDisposable(product)) return false;
-  if (TYPE_HAYSTACK_RE.e_liquid.test(hay)) return true;
-
-  const volumeMatch = hay.match(/\b(\d+(?:\.\d+)?)\s*m[lL]\b/);
-  if (volumeMatch) {
-    const ml = Number(volumeMatch[1]);
-    // Typical bottled juice is > 2ml; ≤2ml is usually a pod/cart fill
-    if (Number.isFinite(ml) && ml > 2) return true;
+function looksLikePodOrKitHardware(product) {
+  const title = productTitleHaystack(product);
+  if (looksLikeEmptyPodHardware(product)) return true;
+  if (/\b(pod\s*kits?|pod\s*systems?|replacement\s*pods?|empty\s*pods?|mesh\s*pods?)\b/i.test(title)) {
+    return true;
+  }
+  // Colorway / kit SKUs like "Linvo Force Air Pod Kit 2mL - Dream Purple"
+  if (/\bpods?\b/i.test(title) && /\b(kits?|systems?|devices?)\b/i.test(title)) {
+    return true;
   }
   return false;
 }
 
 /**
+ * Bottled e-liquid signals only — small ml sizes alone (0.5ml / 1ml carts) are NOT e-liquid.
+ * Description mentions of "e-juice" must not override a pod/kit/replacement title.
+ */
+function looksLikeELiquid(product) {
+  if (
+    looksLikePodOrKitHardware(product) ||
+    looksLikeHardwareOrEmptyCart(product) ||
+    looksLikeDisposable(product)
+  ) {
+    return false;
+  }
+
+  const title = productTitleHaystack(product);
+  // Explicit juice language in the TITLE is authoritative
+  if (TYPE_HAYSTACK_RE.e_liquid.test(title)) return true;
+
+  // Title already says pod/kit/device/disposable — never promote via description
+  if (/\b(pods?|kits?|devices?|disposables?|cartridges?|coils?|mods?)\b/i.test(title)) {
+    return false;
+  }
+
+  const hay = productHaystack(product);
+  if (TYPE_HAYSTACK_RE.e_liquid.test(hay)) return true;
+
+  const volumeMatch = title.match(/\b(\d+(?:\.\d+)?)\s*m[lL]\b/);
+  const mlFromTitle = volumeMatch ? Number(volumeMatch[1]) : NaN;
+  const mlFromField = Number(product.volumeMl);
+  const ml = Number.isFinite(mlFromTitle) ? mlFromTitle : mlFromField;
+  // Typical bottled juice is > 2ml; ≤2ml is usually a pod/cart fill
+  if (Number.isFinite(ml) && ml > 2) return true;
+  return false;
+}
+
+/**
  * Strict product-type match. Structured productType is respected, but clear
- * conflicting signals in the title/description always win (e.g. a "disposable"
- * or empty 510 cart miscategorized as e_liquid must not match an e-liquid request).
+ * conflicting signals in the title always win (e.g. a "replacement pod"
+ * miscategorized as e_liquid must not match an e-liquid request).
  */
 export function matchesProductType(product, productType) {
   if (!productType) return true;
@@ -806,49 +866,57 @@ export function matchesProductType(product, productType) {
   const compatible = TYPE_COMPAT[wanted] || new Set([wanted]);
   const disposableSignal = looksLikeDisposable(product);
   const hardwareSignal = looksLikeHardwareOrEmptyCart(product);
+  const podHardwareSignal = looksLikePodOrKitHardware(product);
   const eLiquidSignal = looksLikeELiquid(product);
   const hay = productHaystack(product);
+  const title = productTitleHaystack(product);
 
   // Haystack overrides mis-tagged Shopify types for the e-liquid boundary
   if (wanted === 'e_liquid') {
-    if (disposableSignal || hardwareSignal || actual === 'disposable') return false;
+    if (disposableSignal || hardwareSignal || podHardwareSignal || actual === 'disposable') {
+      return false;
+    }
     if (['cartridge', 'coil', 'battery', 'accessory', 'device', 'pod', 'prefilled'].includes(actual)) {
       return false;
     }
-    // Never trust stored e_liquid alone when the title is clearly hardware
-    if (actual === 'e_liquid') {
-      return !hardwareSignal && !disposableSignal && (eLiquidSignal || TYPE_HAYSTACK_RE.e_liquid.test(hay));
-    }
-    if (actual === 'other' || !actual) {
+    // Never trust stored e_liquid alone — require real e-liquid signals
+    if (actual === 'e_liquid' || actual === 'other' || !actual) {
       return eLiquidSignal;
     }
-    return compatible.has(actual);
+    return false;
   }
 
   if (wanted === 'disposable') {
     if (disposableSignal) return true;
     if (actual === 'disposable') return true;
-    if (hardwareSignal || (eLiquidSignal && !disposableSignal)) return false;
+    if (hardwareSignal || podHardwareSignal || (eLiquidSignal && !disposableSignal)) return false;
     if (actual && actual !== 'other') return compatible.has(actual);
-    return TYPE_HAYSTACK_RE.disposable.test(hay);
+    return TYPE_HAYSTACK_RE.disposable.test(hay) || TYPE_HAYSTACK_RE.disposable.test(title);
   }
 
   // Flavored closed pods — never empty mesh / ohm replacement pods (even if mistyped)
   if (wanted === 'prefilled') {
     if (disposableSignal || eLiquidSignal || looksLikeEmptyPodHardware(product)) return false;
     if (actual === 'prefilled') return true;
-    if (TYPE_HAYSTACK_RE.prefilled.test(hay)) return true;
-    if (FLAVOR_SIGNAL_RE.test(hay) && /\bpods?\b/i.test(hay)) return true;
+    if (TYPE_HAYSTACK_RE.prefilled.test(title) || TYPE_HAYSTACK_RE.prefilled.test(hay)) return true;
+    if (
+      FLAVOR_SIGNAL_RE.test(title) &&
+      /\bpods?\b/i.test(title) &&
+      !looksLikeEmptyPodHardware(product) &&
+      !podHardwareSignal
+    ) {
+      return true;
+    }
     return false;
   }
 
   // Pod systems / empty pods (hardware) — not flavored disposables or juice
   if (wanted === 'pod') {
     if (disposableSignal || eLiquidSignal) return false;
-    if (looksLikeEmptyPodHardware(product)) return true;
+    if (podHardwareSignal || looksLikeEmptyPodHardware(product)) return true;
     if (actual === 'pod') return true;
     if (actual && actual !== 'other' && actual !== 'prefilled') return compatible.has(actual);
-    if (TYPE_HAYSTACK_RE.pod.test(hay) && !FLAVOR_SIGNAL_RE.test(hay)) return true;
+    if (TYPE_HAYSTACK_RE.pod.test(title) && !FLAVOR_SIGNAL_RE.test(title)) return true;
     return false;
   }
 
@@ -860,18 +928,18 @@ export function matchesProductType(product, productType) {
   // Untyped / other — infer from title/category
   if (wanted === 'device') {
     if (disposableSignal) return false;
-    if (eLiquidSignal && !TYPE_HAYSTACK_RE.device.test(hay)) return false;
+    if (eLiquidSignal && !TYPE_HAYSTACK_RE.device.test(title)) return false;
     // Empty carts / coils are not kits unless the title clearly says kit/device/mod
     if (
       /\b(510|empty\s*cart|empty\s*cartridge|cartridges?|coils?|drip\s*tips?)\b/i.test(hay) &&
-      !TYPE_HAYSTACK_RE.device.test(hay)
+      !TYPE_HAYSTACK_RE.device.test(title)
     ) {
       return false;
     }
-    return TYPE_HAYSTACK_RE.device.test(hay);
+    return TYPE_HAYSTACK_RE.device.test(title) || TYPE_HAYSTACK_RE.device.test(hay);
   }
 
-  if (wanted !== 'e_liquid' && TYPE_HAYSTACK_RE.e_liquid.test(hay) && !TYPE_HAYSTACK_RE.pod.test(hay) && !disposableSignal) {
+  if (wanted !== 'e_liquid' && TYPE_HAYSTACK_RE.e_liquid.test(title) && !TYPE_HAYSTACK_RE.pod.test(title) && !disposableSignal) {
     return false;
   }
   if (wanted !== 'disposable' && disposableSignal) {
@@ -879,7 +947,7 @@ export function matchesProductType(product, productType) {
   }
 
   const re = TYPE_HAYSTACK_RE[wanted];
-  return re ? re.test(hay) : compatible.has(actual);
+  return re ? re.test(title) || re.test(hay) : compatible.has(actual);
 }
 
 const FLAVOR_DIRECTION_RE = {
