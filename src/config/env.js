@@ -32,6 +32,13 @@ export const env = {
     secretKey: process.env.STRIPE_SECRET_KEY,
     webhookSecret: process.env.STRIPE_WEBHOOK_SECRET,
     priceId: process.env.STRIPE_PRICE_ID,
+    /**
+     * Display fallback in cents when the Stripe Price cannot be read.
+     * The live amount is always resolved from the configured Stripe Price,
+     * so a $1 verification Price shows $1 without code changes.
+     */
+    fallbackPriceCents:
+      parseInt(process.env.STRIPE_FALLBACK_PRICE_CENTS, 10) || 9900,
   },
   cloudinary: {
     cloudName: process.env.CLOUDINARY_CLOUD_NAME,
@@ -70,6 +77,20 @@ export const env = {
     )
       .trim()
       .toLowerCase(),
+    /** Address shown to customers in email footers */
+    supportContact: String(
+      process.env.SUPPORT_CONTACT_EMAIL ||
+        process.env.SUPPORT_ADMIN_EMAIL ||
+        process.env.ADMIN_EMAIL ||
+        ''
+    )
+      .trim()
+      .toLowerCase(),
+  },
+  /** Public links used inside transactional emails */
+  links: {
+    docsUrl: String(process.env.DOCS_URL || '').trim(),
+    supportUrl: String(process.env.SUPPORT_URL || '').trim(),
   },
   openai: {
     apiKey: process.env.OPENAI_API_KEY,

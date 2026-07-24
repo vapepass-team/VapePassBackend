@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import { authenticateUser } from '../middleware/auth.js';
 import { validate } from '../middleware/validate.js';
+import { rateLimit } from '../middleware/rateLimit.js';
 import {
   registerValidator,
   loginValidator,
@@ -8,10 +9,27 @@ import {
   resetPasswordValidator,
   updateProfileValidator,
   verifyEmailValidator,
+  verifyPasswordResetOtpValidator,
+  requestPasswordChangeValidator,
+  confirmPasswordChangeValidator,
 } from '../validators/auth.validator.js';
 import * as authController from '../controllers/auth.controller.js';
 
 const router = Router();
+
+/** Throttle OTP issuance so codes cannot be used to spam inboxes */
+const otpRequestLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 6,
+  message: 'Too many verification code requests. Please try again later.',
+});
+
+/** Throttle OTP submissions as a second layer over per-code attempt limits */
+const otpVerifyLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 12,
+  message: 'Too many verification attempts. Please try again later.',
+});
 
 /**
  * @swagger
@@ -95,11 +113,57 @@ router.post('/login', validate(loginValidator), authController.login);
 router.post(
   '/verify-email',
   authenticateUser,
+  otpVerifyLimiter,
   validate(verifyEmailValidator),
   authController.verifyEmail
 );
 
-router.post('/resend-verification', authenticateUser, authController.resendVerification);
+router.post(
+  '/resend-verification',
+  authenticateUser,
+  otpRequestLimiter,
+  authController.resendVerification
+);
+
+/**
+ * @swagger
+ * /auth/change-password:
+ *   post:
+ *     summary: Start a password change (sends a confirmation OTP)
+ *     tags: [Auth]
+ *     security:
+ *       - bearerAuth: []
+ *     responses:
+ *       200:
+ *         description: Verification code sent
+ */
+router.post(
+  '/change-password',
+  authenticateUser,
+  otpRequestLimiter,
+  validate(requestPasswordChangeValidator),
+  authController.requestPasswordChange
+);
+
+/**
+ * @swagger
+ * /auth/change-password/confirm:
+ *   post:
+ *     summary: Confirm a password change with the emailed OTP
+ *     tags: [Auth]
+ *     security:
+ *       - bearerAuth: []
+ *     responses:
+ *       200:
+ *         description: Password updated
+ */
+router.post(
+  '/change-password/confirm',
+  authenticateUser,
+  otpVerifyLimiter,
+  validate(confirmPasswordChangeValidator),
+  authController.confirmPasswordChange
+);
 
 /**
  * @swagger
@@ -119,7 +183,7 @@ router.post('/logout', authenticateUser, authController.logout);
  * @swagger
  * /auth/forgot-password:
  *   post:
- *     summary: Request a password reset email
+ *     summary: Send a password reset OTP to a registered email
  *     tags: [Auth]
  *     requestBody:
  *       required: true
@@ -134,12 +198,43 @@ router.post('/logout', authenticateUser, authController.logout);
  *                 format: email
  *     responses:
  *       200:
- *         description: Reset email sent if account exists
+ *         description: Reset code sent if account exists
  */
 router.post(
   '/forgot-password',
+  otpRequestLimiter,
   validate(forgotPasswordValidator),
   authController.forgotPassword
+);
+
+/**
+ * @swagger
+ * /auth/forgot-password/verify:
+ *   post:
+ *     summary: Exchange a valid reset OTP for a single-use reset token
+ *     tags: [Auth]
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required: [email, otp]
+ *             properties:
+ *               email:
+ *                 type: string
+ *                 format: email
+ *               otp:
+ *                 type: string
+ *     responses:
+ *       200:
+ *         description: Reset token issued
+ */
+router.post(
+  '/forgot-password/verify',
+  otpVerifyLimiter,
+  validate(verifyPasswordResetOtpValidator),
+  authController.verifyPasswordResetOtp
 );
 
 /**

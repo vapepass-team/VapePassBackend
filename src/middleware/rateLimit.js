@@ -13,11 +13,12 @@ function pruneExpired(now) {
 }
 
 /**
- * @param {{ windowMs?: number, max?: number, keyGenerator?: (req) => string }} options
+ * @param {{ windowMs?: number, max?: number, message?: string, keyGenerator?: (req) => string }} options
  */
 export function rateLimit({
   windowMs = 15 * 60 * 1000,
   max = 5,
+  message = 'Too many setup requests. Please try again later.',
   keyGenerator = (req) => {
     const userPart = req.user?._id ? `user:${req.user._id}` : 'anon';
     const ip = req.ip || req.headers['x-forwarded-for'] || req.socket?.remoteAddress || 'unknown';
@@ -45,7 +46,7 @@ export function rateLimit({
     if (entry.count > max) {
       return res.status(429).json({
         success: false,
-        message: 'Too many setup requests. Please try again later.',
+        message,
       });
     }
 

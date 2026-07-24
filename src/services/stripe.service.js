@@ -5,15 +5,60 @@ import ProcessedStripeEvent from '../models/ProcessedStripeEvent.js';
 import { ApiError, SUBSCRIPTION_STATUS } from '../utils/constants.js';
 import { mapStripeSubscriptionStatus } from '../utils/stripeStatus.js';
 import {
+  getSupportAdminEmail,
   sendPaymentFailedEmail,
+  sendSubscriptionActivatedAdminEmail,
   sendSubscriptionActivatedEmail,
   sendSubscriptionPausedEmail,
 } from './email.service.js';
 
-const MONTHLY_PRICE_CENTS = 9900; // $99/month
+/** Display fallback only — the real amount comes from the configured Stripe Price */
+const MONTHLY_PRICE_CENTS = env.stripe.fallbackPriceCents || 9900;
 const MAX_PAYMENT_RETRIES = 2;
+/** Cache the resolved Stripe Price so billing reads stay cheap */
+const PRICE_CACHE_TTL_MS = 10 * 60 * 1000;
+let priceCache = null;
 
 const isConfigured = () => Boolean(env.stripe.secretKey);
+
+/**
+ * Reads the live amount/currency from the configured Stripe Price so a $1
+ * verification Price is displayed as $1 without any code change. Falls back to
+ * STRIPE_FALLBACK_PRICE_CENTS when Stripe is unreachable or unconfigured.
+ */
+export async function getActivePriceSummary() {
+  return resolveActivePrice();
+}
+
+async function resolveActivePrice() {
+  const priceId = String(env.stripe.priceId || '').trim();
+  const fallback = { amount: MONTHLY_PRICE_CENTS / 100, currency: 'USD', interval: 'month' };
+
+  if (!priceId || !isConfigured()) return fallback;
+
+  if (priceCache && priceCache.priceId === priceId && priceCache.expiresAt > Date.now()) {
+    return priceCache.value;
+  }
+
+  try {
+    const Stripe = (await import('stripe')).default;
+    const stripe = new Stripe(env.stripe.secretKey);
+    const price = await stripe.prices.retrieve(priceId);
+
+    const value = {
+      amount:
+        typeof price.unit_amount === 'number' ? price.unit_amount / 100 : fallback.amount,
+      currency: String(price.currency || 'usd').toUpperCase(),
+      interval: price.recurring?.interval || 'month',
+    };
+
+    priceCache = { priceId, value, expiresAt: Date.now() + PRICE_CACHE_TTL_MS };
+    return value;
+  } catch (error) {
+    console.warn(`[billing] Unable to read Stripe price ${priceId}: ${error.message}`);
+    return fallback;
+  }
+}
 
 async function findStoreFromStripeObject(obj) {
   if (obj.metadata?.storeId) {
@@ -43,6 +88,39 @@ async function findStoreFromStripeObject(obj) {
 async function getStoreOwnerEmail(store) {
   const owner = await User.findById(store.createdBy).select('email');
   return owner?.email || null;
+}
+
+async function getStoreOwner(store) {
+  if (!store?.createdBy) return null;
+  return User.findById(store.createdBy).select('email firstName lastName phone').lean();
+}
+
+/**
+ * Notifies administrators that a paid subscription became active.
+ * Never throws — activation must not fail because of email delivery.
+ */
+async function notifyAdminSubscriptionActivated(store, owner) {
+  const adminEmail = getSupportAdminEmail();
+  if (!adminEmail) {
+    console.warn(
+      '[email] SUPPORT_ADMIN_EMAIL is not set — subscription activation notification skipped.'
+    );
+    return;
+  }
+
+  try {
+    await sendSubscriptionActivatedAdminEmail(adminEmail, {
+      ownerName: owner ? `${owner.firstName || ''} ${owner.lastName || ''}`.trim() : null,
+      storeName: store.name,
+      storeUrl: store.websiteUrl || store.productPageUrl || null,
+      email: owner?.email || null,
+      phone: owner?.phone || null,
+      plan: store.subscriptionPlan,
+      activationDate: store.subscriptionStartDate || new Date(),
+    });
+  } catch (error) {
+    console.error('[email] Failed to send admin subscription notification:', error.message);
+  }
 }
 
 function applyPeriodDates(store, stripeSubscription) {
@@ -113,15 +191,29 @@ async function activateStoreSubscription(store, stripeSubscription) {
     store.assistantEnabled = true;
   }
 
-    if (!wasActive) {
-    const email = await getStoreOwnerEmail(store);
-    if (email) {
-      await sendSubscriptionActivatedEmail(email, {
-        storeName: store.name,
-        startDate: store.subscriptionStartDate,
-        endDate: store.subscriptionEndDate,
-      });
+  // Only on the transition into ACTIVE, i.e. once payment has completed
+  if (!wasActive) {
+    const owner = await getStoreOwner(store);
+
+    if (owner?.email) {
+      try {
+        await sendSubscriptionActivatedEmail(owner.email, {
+          storeName: store.name,
+          plan: store.subscriptionPlan,
+          startDate: store.subscriptionStartDate,
+          endDate: store.subscriptionEndDate,
+          nextBillingDate: store.nextBillingDate || store.subscriptionEndDate,
+          autoRenew: store.autoRenew !== false,
+        });
+      } catch (error) {
+        console.error(
+          `[email] Failed to send activation email to ${owner.email}:`,
+          error.message
+        );
+      }
     }
+
+    await notifyAdminSubscriptionActivated(store, owner);
 
     // Inventory scrape is intentionally NOT started here.
     // Owners begin the initial import manually via "Save & Scrape Inventory"
@@ -877,9 +969,12 @@ export const getBillingInfo = async (store = null) => {
   const canRetryPayment =
     paymentFailed && Boolean(store?.stripeSubscriptionId || store?.stripeCustomerId);
 
+  const price = await resolveActivePrice();
+
   return {
-    monthlyPrice: MONTHLY_PRICE_CENTS / 100,
-    currency: 'USD',
+    monthlyPrice: price.amount,
+    currency: price.currency,
+    billingInterval: price.interval,
     configured: isConfigured(),
     plan: store?.subscriptionPlan || 'pro',
     subscriptionStatus: status,

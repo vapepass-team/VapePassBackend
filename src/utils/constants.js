@@ -50,6 +50,12 @@ export const SETUP_REQUEST_STATUS = {
   CANCELLED: 'Cancelled',
 };
 
+/** Product surface a support submission originated from */
+export const SUPPORT_REQUEST_SOURCES = {
+  REQUEST_ASSISTANCE: 'request_assistance',
+  NEED_HELP: 'need_help',
+};
+
 /** Public pricing / Contact Us lead lifecycle */
 export const CONTACT_LEAD_STATUS = {
   NEW: 'New',

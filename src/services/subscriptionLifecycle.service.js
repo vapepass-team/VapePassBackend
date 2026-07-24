@@ -3,8 +3,8 @@ import User from '../models/User.js';
 import { env } from '../config/env.js';
 import { SUBSCRIPTION_STATUS } from '../utils/constants.js';
 import { sendRenewalReminderEmail } from './email.service.js';
+import { getActivePriceSummary } from './stripe.service.js';
 
-const MONTHLY_PRICE = 99;
 const REMINDER_WINDOW_START_DAYS = 2; // ~day 28 of a 30-day cycle
 const REMINDER_WINDOW_END_DAYS = 4; // ~day 26–28
 
@@ -33,6 +33,8 @@ export async function sendUpcomingRenewalReminders() {
   });
 
   const results = [];
+  // Reminder amount mirrors the live Stripe Price so it stays accurate after a price swap
+  const price = await getActivePriceSummary();
 
   for (const store of stores) {
     const owner = await User.findById(store.createdBy).select('email');
@@ -44,8 +46,8 @@ export async function sendUpcomingRenewalReminders() {
     const emailResult = await sendRenewalReminderEmail(owner.email, {
       storeName: store.name,
       renewalDate: store.nextBillingDate,
-      amount: MONTHLY_PRICE,
-      currency: 'USD',
+      amount: price.amount,
+      currency: price.currency,
     });
 
     store.renewalReminderSentAt = new Date();

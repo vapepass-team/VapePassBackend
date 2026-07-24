@@ -84,6 +84,51 @@ const userSchema = new mongoose.Schema(
       type: Date,
       select: false,
     },
+    /** Set once the post-verification welcome email has been delivered */
+    welcomeEmailSentAt: {
+      type: Date,
+      default: null,
+      select: false,
+    },
+    passwordResetOTP: {
+      type: String,
+      select: false,
+    },
+    passwordResetOTPExpires: {
+      type: Date,
+      select: false,
+    },
+    passwordResetOTPAttempts: {
+      type: Number,
+      default: 0,
+      select: false,
+    },
+    passwordResetOTPLastSentAt: {
+      type: Date,
+      select: false,
+    },
+    passwordChangeOTP: {
+      type: String,
+      select: false,
+    },
+    passwordChangeOTPExpires: {
+      type: Date,
+      select: false,
+    },
+    passwordChangeOTPAttempts: {
+      type: Number,
+      default: 0,
+      select: false,
+    },
+    passwordChangeOTPLastSentAt: {
+      type: Date,
+      select: false,
+    },
+    /** Already-hashed replacement password, applied only after OTP confirmation */
+    pendingPasswordHash: {
+      type: String,
+      select: false,
+    },
   },
   {
     timestamps: { createdAt: true, updatedAt: false },

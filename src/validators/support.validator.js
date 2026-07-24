@@ -1,5 +1,5 @@
 import { body, param } from 'express-validator';
-import { SETUP_REQUEST_STATUS } from '../utils/constants.js';
+import { SETUP_REQUEST_STATUS, SUPPORT_REQUEST_SOURCES } from '../utils/constants.js';
 
 function stripTags(value) {
   return String(value || '').replace(/<[^>]*>/g, '').trim();
@@ -73,6 +73,12 @@ export const createSetupRequestValidator = [
     .customSanitizer(stripTags)
     .isLength({ max: 2000 })
     .withMessage('Message cannot exceed 2000 characters'),
+
+  body('source')
+    .optional({ values: 'falsy' })
+    .trim()
+    .isIn(Object.values(SUPPORT_REQUEST_SOURCES))
+    .withMessage('Invalid submission source'),
 ];
 
 export const updateSetupRequestStatusValidator = [

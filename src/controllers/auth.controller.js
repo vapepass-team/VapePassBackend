@@ -46,22 +46,22 @@ export const logout = asyncHandler(async (req, res) => {
 });
 
 export const forgotPassword = asyncHandler(async (req, res) => {
-  const result = await authService.forgotPassword(req.body.email);
-
-  const responseData = {};
-
-  // Expose token in development only (replace with email in production)
-  if (process.env.NODE_ENV !== 'production' && result.resetToken) {
-    responseData.resetToken = result.resetToken;
-    responseData.note = 'Reset token included for development testing only';
-  }
+  await authService.forgotPassword(req.body.email);
 
   return sendSuccess(
     res,
     200,
-    'If an account exists with that email, a password reset link has been sent',
-    Object.keys(responseData).length ? responseData : undefined
+    'If an account exists with that email, a verification code has been sent'
   );
+});
+
+export const verifyPasswordResetOtp = asyncHandler(async (req, res) => {
+  const result = await authService.verifyPasswordResetOtp(req.body.email, req.body.otp);
+
+  return sendSuccess(res, 200, 'Verification successful', {
+    resetToken: result.resetToken,
+    expiresInSeconds: result.expiresInSeconds,
+  });
 });
 
 export const resetPassword = asyncHandler(async (req, res) => {
@@ -121,6 +121,34 @@ export const verifyEmail = asyncHandler(async (req, res) => {
     result.alreadyVerified ? 'Email already verified' : 'Email verified successfully',
     { user: result.user }
   );
+});
+
+export const requestPasswordChange = asyncHandler(async (req, res) => {
+  const result = await authService.requestPasswordChange(
+    req.user._id,
+    req.body.currentPassword,
+    req.body.newPassword
+  );
+
+  return sendSuccess(res, 200, 'Verification code sent to your email', {
+    email: result.email,
+    expiresInSeconds: result.expiresInSeconds,
+    resendAvailableInSeconds: result.resendAvailableInSeconds,
+  });
+});
+
+export const confirmPasswordChange = asyncHandler(async (req, res) => {
+  const { user, accessToken, refreshToken } = await authService.confirmPasswordChange(
+    req.user._id,
+    req.body.otp
+  );
+
+  setRefreshTokenCookie(res, refreshToken);
+
+  return sendSuccess(res, 200, 'Password updated successfully', {
+    user,
+    accessToken,
+  });
 });
 
 export const resendVerification = asyncHandler(async (req, res) => {

@@ -1,3 +1,4 @@
+import bcrypt from 'bcryptjs';
 import User from '../models/User.js';
 import Store from '../models/Store.js';
 import { ApiError, ROLES, SUBSCRIPTION_PLANS } from '../utils/constants.js';
@@ -9,11 +10,24 @@ import {
   generateRefreshToken,
   verifyRefreshToken,
 } from './token.service.js';
-import { sendPasswordResetEmail, sendEmailVerificationOtp } from './email.service.js';
+import {
+  sendEmailVerificationOtp,
+  sendPasswordChangeOtpEmail,
+  sendPasswordChangedEmail,
+  sendPasswordResetOtpEmail,
+  sendWelcomeEmail,
+} from './email.service.js';
 
 const EMAIL_OTP_TTL_MS = 10 * 60 * 1000; // 10 minutes
 const EMAIL_OTP_RESEND_COOLDOWN_MS = 60 * 1000; // 60 seconds
 const EMAIL_OTP_MAX_ATTEMPTS = 5;
+
+const PASSWORD_OTP_TTL_MINUTES = 10;
+const PASSWORD_OTP_TTL_MS = PASSWORD_OTP_TTL_MINUTES * 60 * 1000;
+const PASSWORD_OTP_RESEND_COOLDOWN_MS = 60 * 1000;
+const PASSWORD_OTP_MAX_ATTEMPTS = 5;
+/** Window to submit the new password after the reset OTP is accepted */
+const PASSWORD_RESET_TOKEN_TTL_MS = 15 * 60 * 1000;
 
 function normalizeWebsiteUrl(rawUrl) {
   if (!rawUrl) return null;
@@ -138,7 +152,6 @@ export const registerUser = async ({
       sent: true,
       expiresInSeconds: Math.floor(EMAIL_OTP_TTL_MS / 1000),
       resendAvailableInSeconds: Math.floor(EMAIL_OTP_RESEND_COOLDOWN_MS / 1000),
-      ...(verification.devOtp ? { otp: verification.devOtp } : {}),
     },
   };
 };
@@ -205,27 +218,119 @@ export const updateUserProfile = async (userId, updates = {}) => {
   return sanitizeUser(user);
 };
 
+/**
+ * Starts the OTP-based password reset. Always resolves successfully so the
+ * response cannot be used to enumerate registered email addresses.
+ */
 export const forgotPassword = async (email) => {
-  const user = await User.findOne({ email });
+  const user = await User.findOne({ email }).select(
+    '+passwordResetOTP +passwordResetOTPExpires +passwordResetOTPAttempts +passwordResetOTPLastSentAt'
+  );
 
-  // Always return success to prevent email enumeration
   if (!user) {
-    return { resetToken: null };
+    return { sent: false };
   }
 
-  const { resetToken, hashedToken } = generateResetToken();
+  const now = Date.now();
+  if (user.passwordResetOTPLastSentAt) {
+    const elapsed = now - new Date(user.passwordResetOTPLastSentAt).getTime();
+    if (elapsed < PASSWORD_OTP_RESEND_COOLDOWN_MS) {
+      const waitSeconds = Math.ceil((PASSWORD_OTP_RESEND_COOLDOWN_MS - elapsed) / 1000);
+      throw new ApiError(
+        429,
+        `Please wait ${waitSeconds} second${waitSeconds === 1 ? '' : 's'} before requesting a new code`
+      );
+    }
+  }
 
-  user.passwordResetToken = hashedToken;
-  user.passwordResetExpires = Date.now() + 60 * 60 * 1000; // 1 hour
+  const { otp, hashedOtp } = generateOtp(6);
+
+  // Issuing a new code invalidates any previous one
+  user.passwordResetOTP = hashedOtp;
+  user.passwordResetOTPExpires = new Date(now + PASSWORD_OTP_TTL_MS);
+  user.passwordResetOTPAttempts = 0;
+  user.passwordResetOTPLastSentAt = new Date(now);
+  user.passwordResetToken = undefined;
+  user.passwordResetExpires = undefined;
   await user.save({ validateBeforeSave: false });
 
   try {
-    await sendPasswordResetEmail(user.email, resetToken);
+    await sendPasswordResetOtpEmail(user.email, otp, PASSWORD_OTP_TTL_MINUTES);
   } catch (error) {
-    console.error(`[email] Failed to send password reset to ${user.email}:`, error.message);
+    console.error(`[email] Failed to send password reset OTP to ${user.email}:`, error.message);
   }
 
-  return { resetToken, email: user.email };
+  return { sent: true, email: user.email };
+};
+
+/**
+ * Validates a reset OTP and exchanges it for a single-use reset token that
+ * `resetPassword` accepts. The OTP itself is consumed here.
+ */
+export const verifyPasswordResetOtp = async (email, rawOtp) => {
+  const otp = String(rawOtp || '').trim();
+
+  if (!/^\d{6}$/.test(otp)) {
+    throw new ApiError(400, 'Enter the 6-digit verification code');
+  }
+
+  const user = await User.findOne({ email }).select(
+    '+passwordResetOTP +passwordResetOTPExpires +passwordResetOTPAttempts +passwordResetOTPLastSentAt'
+  );
+
+  const invalidCodeError = new ApiError(400, 'Invalid or expired verification code');
+
+  if (!user || !user.passwordResetOTP || !user.passwordResetOTPExpires) {
+    throw invalidCodeError;
+  }
+
+  const clearResetOtp = async () => {
+    user.passwordResetOTP = undefined;
+    user.passwordResetOTPExpires = undefined;
+    user.passwordResetOTPAttempts = 0;
+    await user.save({ validateBeforeSave: false });
+  };
+
+  if (new Date(user.passwordResetOTPExpires).getTime() <= Date.now()) {
+    await clearResetOtp();
+    throw new ApiError(400, 'Verification code expired. Request a new code.');
+  }
+
+  if ((user.passwordResetOTPAttempts || 0) >= PASSWORD_OTP_MAX_ATTEMPTS) {
+    await clearResetOtp();
+    throw new ApiError(429, 'Too many invalid attempts. Request a new code.');
+  }
+
+  if (hashToken(otp) !== user.passwordResetOTP) {
+    user.passwordResetOTPAttempts = (user.passwordResetOTPAttempts || 0) + 1;
+    const remaining = PASSWORD_OTP_MAX_ATTEMPTS - user.passwordResetOTPAttempts;
+    await user.save({ validateBeforeSave: false });
+
+    if (remaining <= 0) {
+      await clearResetOtp();
+      throw new ApiError(429, 'Too many invalid attempts. Request a new code.');
+    }
+
+    throw new ApiError(
+      400,
+      `Invalid verification code. ${remaining} attempt${remaining === 1 ? '' : 's'} remaining.`
+    );
+  }
+
+  // OTP is single-use: consume it and hand back a short-lived reset token
+  const { resetToken, hashedToken } = generateResetToken();
+
+  user.passwordResetOTP = undefined;
+  user.passwordResetOTPExpires = undefined;
+  user.passwordResetOTPAttempts = 0;
+  user.passwordResetToken = hashedToken;
+  user.passwordResetExpires = new Date(Date.now() + PASSWORD_RESET_TOKEN_TTL_MS);
+  await user.save({ validateBeforeSave: false });
+
+  return {
+    resetToken,
+    expiresInSeconds: Math.floor(PASSWORD_RESET_TOKEN_TTL_MS / 1000),
+  };
 };
 
 export const resetPassword = async (token, newPassword) => {
@@ -243,6 +348,9 @@ export const resetPassword = async (token, newPassword) => {
   user.password = newPassword;
   user.passwordResetToken = undefined;
   user.passwordResetExpires = undefined;
+  user.passwordResetOTP = undefined;
+  user.passwordResetOTPExpires = undefined;
+  user.passwordResetOTPAttempts = 0;
   user.refreshToken = undefined;
   await user.save();
 
@@ -251,6 +359,13 @@ export const resetPassword = async (token, newPassword) => {
 
   user.refreshToken = refreshToken;
   await user.save({ validateBeforeSave: false });
+
+  sendPasswordChangedEmail(user.email, {
+    ownerName: user.firstName,
+    changedAt: new Date(),
+  }).catch((error) => {
+    console.error(`[email] Failed to send password change notice to ${user.email}:`, error.message);
+  });
 
   return {
     user: sanitizeUser(user),
@@ -324,7 +439,6 @@ async function issueEmailVerificationOtp(user, { force = false } = {}) {
     alreadyVerified: false,
     expiresInSeconds: Math.floor(EMAIL_OTP_TTL_MS / 1000),
     resendAvailableInSeconds: Math.floor(EMAIL_OTP_RESEND_COOLDOWN_MS / 1000),
-    ...(process.env.NODE_ENV !== 'production' ? { devOtp: otp } : {}),
   };
 }
 
@@ -346,7 +460,6 @@ export const resendEmailVerification = async (userId) => {
     user: sanitizeUser(user),
     expiresInSeconds: result.expiresInSeconds,
     resendAvailableInSeconds: result.resendAvailableInSeconds,
-    ...(result.devOtp ? { otp: result.devOtp } : {}),
   };
 };
 
@@ -410,6 +523,193 @@ export const verifyEmailOtp = async (userId, rawOtp) => {
   user.emailVerificationLastSentAt = undefined;
   await user.save({ validateBeforeSave: false });
 
+  await deliverWelcomeEmail(user);
+
   return { user: sanitizeUser(user), alreadyVerified: false };
+};
+
+/**
+ * Sends the welcome email once per account, immediately after verification.
+ * Delivery failures must never block the verification response.
+ */
+async function deliverWelcomeEmail(user) {
+  const fresh = await User.findById(user._id).select('+welcomeEmailSentAt');
+  if (!fresh || fresh.welcomeEmailSentAt) return;
+
+  let storeName = null;
+  if (fresh.storeId) {
+    const store = await Store.findById(fresh.storeId).select('name').lean();
+    storeName = store?.name || null;
+  }
+
+  // Reserve the send before dispatching so retries cannot duplicate the email
+  fresh.welcomeEmailSentAt = new Date();
+  await fresh.save({ validateBeforeSave: false });
+
+  try {
+    await sendWelcomeEmail(fresh.email, {
+      ownerName: fresh.firstName,
+      storeName,
+    });
+  } catch (error) {
+    console.error(`[email] Failed to send welcome email to ${fresh.email}:`, error.message);
+  }
+}
+
+/**
+ * Step 1 of the change-password flow: verify the current password, stage the
+ * new password hash, and email a confirmation OTP.
+ */
+export const requestPasswordChange = async (userId, currentPassword, newPassword) => {
+  const user = await User.findById(userId).select(
+    '+password +passwordChangeOTP +passwordChangeOTPExpires +passwordChangeOTPAttempts +passwordChangeOTPLastSentAt +pendingPasswordHash'
+  );
+
+  if (!user) {
+    throw new ApiError(404, 'User not found');
+  }
+
+  if (!(await user.comparePassword(currentPassword))) {
+    throw new ApiError(400, 'Your current password is incorrect');
+  }
+
+  if (await user.comparePassword(newPassword)) {
+    throw new ApiError(400, 'Your new password must be different from the current password');
+  }
+
+  const now = Date.now();
+  if (user.passwordChangeOTPLastSentAt) {
+    const elapsed = now - new Date(user.passwordChangeOTPLastSentAt).getTime();
+    if (elapsed < PASSWORD_OTP_RESEND_COOLDOWN_MS) {
+      const waitSeconds = Math.ceil((PASSWORD_OTP_RESEND_COOLDOWN_MS - elapsed) / 1000);
+      throw new ApiError(
+        429,
+        `Please wait ${waitSeconds} second${waitSeconds === 1 ? '' : 's'} before requesting a new code`
+      );
+    }
+  }
+
+  const { otp, hashedOtp } = generateOtp(6);
+  const salt = await bcrypt.genSalt(12);
+
+  user.pendingPasswordHash = await bcrypt.hash(newPassword, salt);
+  user.passwordChangeOTP = hashedOtp;
+  user.passwordChangeOTPExpires = new Date(now + PASSWORD_OTP_TTL_MS);
+  user.passwordChangeOTPAttempts = 0;
+  user.passwordChangeOTPLastSentAt = new Date(now);
+  await user.save({ validateBeforeSave: false });
+
+  try {
+    await sendPasswordChangeOtpEmail(user.email, otp, PASSWORD_OTP_TTL_MINUTES);
+  } catch (error) {
+    console.error(`[email] Failed to send password change OTP to ${user.email}:`, error.message);
+  }
+
+  return {
+    email: user.email,
+    expiresInSeconds: Math.floor(PASSWORD_OTP_TTL_MS / 1000),
+    resendAvailableInSeconds: Math.floor(PASSWORD_OTP_RESEND_COOLDOWN_MS / 1000),
+  };
+};
+
+/**
+ * Step 2 of the change-password flow: confirm the OTP and apply the staged
+ * password hash. All other sessions are invalidated.
+ */
+export const confirmPasswordChange = async (userId, rawOtp) => {
+  const otp = String(rawOtp || '').trim();
+
+  if (!/^\d{6}$/.test(otp)) {
+    throw new ApiError(400, 'Enter the 6-digit verification code');
+  }
+
+  const user = await User.findById(userId).select(
+    '+passwordChangeOTP +passwordChangeOTPExpires +passwordChangeOTPAttempts +passwordChangeOTPLastSentAt +pendingPasswordHash'
+  );
+
+  if (!user) {
+    throw new ApiError(404, 'User not found');
+  }
+
+  const clearPendingChange = async () => {
+    user.passwordChangeOTP = undefined;
+    user.passwordChangeOTPExpires = undefined;
+    user.passwordChangeOTPAttempts = 0;
+    user.pendingPasswordHash = undefined;
+    await user.save({ validateBeforeSave: false });
+  };
+
+  if (!user.passwordChangeOTP || !user.passwordChangeOTPExpires || !user.pendingPasswordHash) {
+    throw new ApiError(400, 'No pending password change found. Start again.');
+  }
+
+  if (new Date(user.passwordChangeOTPExpires).getTime() <= Date.now()) {
+    await clearPendingChange();
+    throw new ApiError(400, 'Verification code expired. Start again.');
+  }
+
+  if ((user.passwordChangeOTPAttempts || 0) >= PASSWORD_OTP_MAX_ATTEMPTS) {
+    await clearPendingChange();
+    throw new ApiError(429, 'Too many invalid attempts. Start again.');
+  }
+
+  if (hashToken(otp) !== user.passwordChangeOTP) {
+    user.passwordChangeOTPAttempts = (user.passwordChangeOTPAttempts || 0) + 1;
+    const remaining = PASSWORD_OTP_MAX_ATTEMPTS - user.passwordChangeOTPAttempts;
+    await user.save({ validateBeforeSave: false });
+
+    if (remaining <= 0) {
+      await clearPendingChange();
+      throw new ApiError(429, 'Too many invalid attempts. Start again.');
+    }
+
+    throw new ApiError(
+      400,
+      `Invalid verification code. ${remaining} attempt${remaining === 1 ? '' : 's'} remaining.`
+    );
+  }
+
+  // Password is already hashed, so bypass the pre-save hashing hook
+  const newPasswordHash = user.pendingPasswordHash;
+  await User.updateOne(
+    { _id: user._id },
+    {
+      $set: { password: newPasswordHash },
+      $unset: {
+        passwordChangeOTP: '',
+        passwordChangeOTPExpires: '',
+        passwordChangeOTPAttempts: '',
+        passwordChangeOTPLastSentAt: '',
+        pendingPasswordHash: '',
+        passwordResetToken: '',
+        passwordResetExpires: '',
+        passwordResetOTP: '',
+        passwordResetOTPExpires: '',
+      },
+    }
+  );
+
+  const refreshed = await User.findById(user._id);
+  const accessToken = generateAccessToken(refreshed._id, refreshed.role);
+  const refreshToken = generateRefreshToken(refreshed._id);
+
+  refreshed.refreshToken = refreshToken;
+  await refreshed.save({ validateBeforeSave: false });
+
+  sendPasswordChangedEmail(refreshed.email, {
+    ownerName: refreshed.firstName,
+    changedAt: new Date(),
+  }).catch((error) => {
+    console.error(
+      `[email] Failed to send password change notice to ${refreshed.email}:`,
+      error.message
+    );
+  });
+
+  return {
+    user: sanitizeUser(refreshed),
+    accessToken,
+    refreshToken,
+  };
 };
 

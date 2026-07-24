@@ -1,7 +1,12 @@
 import SetupRequest from '../models/SetupRequest.js';
 import ContactLead from '../models/ContactLead.js';
 import Store from '../models/Store.js';
-import { ApiError, CONTACT_LEAD_STATUS, SETUP_REQUEST_STATUS } from '../utils/constants.js';
+import {
+  ApiError,
+  CONTACT_LEAD_STATUS,
+  SETUP_REQUEST_STATUS,
+  SUPPORT_REQUEST_SOURCES,
+} from '../utils/constants.js';
 import {
   getSupportAdminEmail,
   sendSetupRequestAdminEmail,
@@ -22,6 +27,7 @@ async function dispatchSetupRequestEmails(doc) {
     websiteUrl: doc.websiteUrl,
     message: doc.message,
     submittedAt: doc.createdAt,
+    source: doc.source || SUPPORT_REQUEST_SOURCES.REQUEST_ASSISTANCE,
   };
 
   if (!adminTo) {
@@ -140,6 +146,10 @@ export async function createSetupAssistanceRequest(payload, user) {
     userId,
     storeId,
     subscriptionId,
+    source:
+      payload.source === SUPPORT_REQUEST_SOURCES.NEED_HELP
+        ? SUPPORT_REQUEST_SOURCES.NEED_HELP
+        : SUPPORT_REQUEST_SOURCES.REQUEST_ASSISTANCE,
     status: SETUP_REQUEST_STATUS.PENDING,
   });
 

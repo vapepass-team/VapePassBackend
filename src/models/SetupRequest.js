@@ -1,5 +1,5 @@
 import mongoose from 'mongoose';
-import { SETUP_REQUEST_STATUS } from '../utils/constants.js';
+import { SETUP_REQUEST_STATUS, SUPPORT_REQUEST_SOURCES } from '../utils/constants.js';
 
 const setupRequestSchema = new mongoose.Schema(
   {
@@ -57,6 +57,13 @@ const setupRequestSchema = new mongoose.Schema(
       type: String,
       default: null,
       trim: true,
+    },
+    /** Product surface the submission came from */
+    source: {
+      type: String,
+      enum: Object.values(SUPPORT_REQUEST_SOURCES),
+      default: SUPPORT_REQUEST_SOURCES.REQUEST_ASSISTANCE,
+      index: true,
     },
     status: {
       type: String,
