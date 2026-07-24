@@ -4,7 +4,7 @@ import { ApiError, ACTIVITY_TYPES, CUSTOMER_STATUS } from '../utils/constants.js
 import { logActivity } from './activity.service.js';
 import { validateVerificationCode } from './verification.service.js';
 import * as passkitService from './passkit.service.js';
-import { resolveAssetUrl } from '../utils/assets.js';
+import { toPortableAssetUrl } from '../utils/assets.js';
 
 export const joinCustomer = async ({ storeId, code, fullName, phone, email }) => {
   const store = await Store.findById(storeId);
@@ -52,7 +52,7 @@ export const joinCustomer = async ({ storeId, code, fullName, phone, email }) =>
       brandColor: store.brandColor,
       rewardDescription: store.rewardDescription,
       stampGoal: store.stampGoal,
-      logo: resolveAssetUrl(store.logo),
+      logo: toPortableAssetUrl(store.logo),
     },
     wallet: walletUrls,
   };

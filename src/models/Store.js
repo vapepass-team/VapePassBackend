@@ -2,7 +2,7 @@ import mongoose from 'mongoose';
 import { SUBSCRIPTION_PLANS, SUBSCRIPTION_STATUS } from '../utils/constants.js';
 import { extractHostname } from '../utils/domain.js';
 import { getLegalAge } from '../utils/legalAge.js';
-import { resolveAssetUrl } from '../utils/assets.js';
+import { toPortableAssetUrl } from '../utils/assets.js';
 
 const storeSchema = new mongoose.Schema(
   {
@@ -310,12 +310,18 @@ storeSchema.pre('findOneAndUpdate', async function (next) {
 
 /**
  * Logos are stored relative (local uploads) or absolute (Cloudinary).
- * Resolve to an absolute URL on the way out so clients never receive a path
- * that only the uploading machine can serve.
+ * Never emit loopback absolute URLs — those break production frontends.
  */
 storeSchema.set('toJSON', {
   transform: (_doc, ret) => {
-    if (ret.logo) ret.logo = resolveAssetUrl(ret.logo);
+    if (ret.logo) ret.logo = toPortableAssetUrl(ret.logo);
+    return ret;
+  },
+});
+
+storeSchema.set('toObject', {
+  transform: (_doc, ret) => {
+    if (ret.logo) ret.logo = toPortableAssetUrl(ret.logo);
     return ret;
   },
 });
