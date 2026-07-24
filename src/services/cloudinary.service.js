@@ -27,23 +27,18 @@ function mimeToExt(mimetype = '') {
   }
 }
 
-function getPublicApiBase() {
-  const base = (env.apiPublicUrl || `http://localhost:${env.port}`).replace(/\/+$/, '');
-  if (base.includes('localhost:3000')) {
-    return `http://localhost:${env.port}`;
-  }
-  return base;
-}
-
 /**
  * Persist logo locally when Cloudinary is not configured (dev / simple hosts).
  * Files are served from /uploads/logos via express.static(public).
+ *
+ * Returns a root-relative path — never an absolute URL — so the same record
+ * resolves correctly in every environment that reads the shared database.
  */
 async function uploadImageLocally(fileBuffer, mimetype) {
   await fs.mkdir(LOCAL_LOGO_DIR, { recursive: true });
   const filename = `${crypto.randomBytes(16).toString('hex')}${mimeToExt(mimetype)}`;
   await fs.writeFile(path.join(LOCAL_LOGO_DIR, filename), fileBuffer);
-  return `${getPublicApiBase()}/uploads/logos/${filename}`;
+  return `/uploads/logos/${filename}`;
 }
 
 /**

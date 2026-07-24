@@ -73,8 +73,20 @@ app.get('/widget.js', (req, res) => {
   });
 });
 
-// Static assets (email logo, etc.)
-app.use(express.static(path.join(__dirname, '../public'), { maxAge: '1d' }));
+// Static assets (email logo, uploaded store logos, etc.)
+// Uploaded logos are rendered by the frontend on a different origin, so they
+// must be readable cross-origin.
+app.use(
+  express.static(path.join(__dirname, '../public'), {
+    maxAge: '1d',
+    setHeaders: (res, filePath) => {
+      if (filePath.includes(`${path.sep}uploads${path.sep}`)) {
+        res.setHeader('Access-Control-Allow-Origin', '*');
+        res.setHeader('Cross-Origin-Resource-Policy', 'cross-origin');
+      }
+    },
+  })
+);
 
 // API v1 routes
 app.use('/api/v1', apiRoutes);
