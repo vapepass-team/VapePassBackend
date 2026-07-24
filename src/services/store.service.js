@@ -84,7 +84,7 @@ export const updateStoreSettings = async (user, updates, logoFile) => {
 
   if (logoFile) {
     const { uploadImage } = await import('./cloudinary.service.js');
-    data.logo = await uploadImage(logoFile.buffer);
+    data.logo = await uploadImage(logoFile.buffer, 'vapepass/logos', logoFile.mimetype);
   }
 
   Object.assign(store, data);

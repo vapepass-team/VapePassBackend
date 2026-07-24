@@ -139,6 +139,15 @@ export const resetPasswordValidator = [
     .withMessage('Password must contain at least one uppercase letter, one lowercase letter, and one number'),
 ];
 
+export const verifyEmailValidator = [
+  body('otp')
+    .trim()
+    .notEmpty()
+    .withMessage('Verification code is required')
+    .matches(/^\d{6}$/)
+    .withMessage('Enter the 6-digit verification code'),
+];
+
 export const updateProfileValidator = [
   body('firstName')
     .optional()

@@ -9,6 +9,10 @@ export const sanitizeUser = (user) => {
   delete obj.refreshToken;
   delete obj.passwordResetToken;
   delete obj.passwordResetExpires;
+  delete obj.emailVerificationOTP;
+  delete obj.emailVerificationExpires;
+  delete obj.emailVerificationAttempts;
+  delete obj.emailVerificationLastSentAt;
   delete obj.__v;
 
   return obj;

@@ -12,6 +12,10 @@ export const getBillingInfo = asyncHandler(async (req, res) => {
 });
 
 export const createCheckout = asyncHandler(async (req, res) => {
+  if (req.user.emailVerified === false) {
+    throw new ApiError(403, 'Please verify your email before activating a subscription');
+  }
+
   const store = await storeService.getStoreByUser(req.user);
   const session = await stripeService.createCheckoutSession(store, req.user);
 

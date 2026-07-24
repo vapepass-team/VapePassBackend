@@ -62,6 +62,28 @@ const userSchema = new mongoose.Schema(
       type: Date,
       select: false,
     },
+    /** Existing accounts default verified; new registrations set false explicitly */
+    emailVerified: {
+      type: Boolean,
+      default: true,
+    },
+    emailVerificationOTP: {
+      type: String,
+      select: false,
+    },
+    emailVerificationExpires: {
+      type: Date,
+      select: false,
+    },
+    emailVerificationAttempts: {
+      type: Number,
+      default: 0,
+      select: false,
+    },
+    emailVerificationLastSentAt: {
+      type: Date,
+      select: false,
+    },
   },
   {
     timestamps: { createdAt: true, updatedAt: false },

@@ -2,14 +2,18 @@ import User from '../models/User.js';
 import Store from '../models/Store.js';
 import { ApiError, ROLES, SUBSCRIPTION_PLANS } from '../utils/constants.js';
 import { extractHostname } from '../utils/domain.js';
-import { generateResetToken, hashToken } from '../utils/token.js';
+import { generateResetToken, generateOtp, hashToken } from '../utils/token.js';
 import { sanitizeUser } from '../utils/user.js';
 import {
   generateAccessToken,
   generateRefreshToken,
   verifyRefreshToken,
 } from './token.service.js';
-import { sendPasswordResetEmail } from './email.service.js';
+import { sendPasswordResetEmail, sendEmailVerificationOtp } from './email.service.js';
+
+const EMAIL_OTP_TTL_MS = 10 * 60 * 1000; // 10 minutes
+const EMAIL_OTP_RESEND_COOLDOWN_MS = 60 * 1000; // 60 seconds
+const EMAIL_OTP_MAX_ATTEMPTS = 5;
 
 function normalizeWebsiteUrl(rawUrl) {
   if (!rawUrl) return null;
@@ -97,6 +101,7 @@ export const registerUser = async ({
     phone: phone || null,
     password,
     role: ROLES.STORE_OWNER,
+    emailVerified: false,
   });
 
   const store = await Store.create({
@@ -122,11 +127,19 @@ export const registerUser = async ({
   user.refreshToken = refreshToken;
   await user.save({ validateBeforeSave: false });
 
+  const verification = await issueEmailVerificationOtp(user, { force: true });
+
   return {
     user: sanitizeUser(user),
     store,
     accessToken,
     refreshToken,
+    emailVerification: {
+      sent: true,
+      expiresInSeconds: Math.floor(EMAIL_OTP_TTL_MS / 1000),
+      resendAvailableInSeconds: Math.floor(EMAIL_OTP_RESEND_COOLDOWN_MS / 1000),
+      ...(verification.devOtp ? { otp: verification.devOtp } : {}),
+    },
   };
 };
 
@@ -260,3 +273,143 @@ export const validateRefreshToken = async (token) => {
     throw new ApiError(401, 'Invalid or expired refresh token');
   }
 };
+
+async function loadUserForEmailVerification(userId) {
+  const user = await User.findById(userId).select(
+    '+emailVerificationOTP +emailVerificationExpires +emailVerificationAttempts +emailVerificationLastSentAt'
+  );
+
+  if (!user) {
+    throw new ApiError(404, 'User not found');
+  }
+
+  return user;
+}
+
+async function issueEmailVerificationOtp(user, { force = false } = {}) {
+  if (user.emailVerified) {
+    return {
+      alreadyVerified: true,
+      resendAvailableInSeconds: 0,
+    };
+  }
+
+  const now = Date.now();
+  if (!force && user.emailVerificationLastSentAt) {
+    const elapsed = now - new Date(user.emailVerificationLastSentAt).getTime();
+    if (elapsed < EMAIL_OTP_RESEND_COOLDOWN_MS) {
+      const waitSeconds = Math.ceil((EMAIL_OTP_RESEND_COOLDOWN_MS - elapsed) / 1000);
+      throw new ApiError(
+        429,
+        `Please wait ${waitSeconds} second${waitSeconds === 1 ? '' : 's'} before requesting a new code`
+      );
+    }
+  }
+
+  const { otp, hashedOtp } = generateOtp(6);
+
+  user.emailVerificationOTP = hashedOtp;
+  user.emailVerificationExpires = new Date(now + EMAIL_OTP_TTL_MS);
+  user.emailVerificationAttempts = 0;
+  user.emailVerificationLastSentAt = new Date(now);
+  await user.save({ validateBeforeSave: false });
+
+  try {
+    await sendEmailVerificationOtp(user.email, otp);
+  } catch (error) {
+    console.error(`[email] Failed to send verification OTP to ${user.email}:`, error.message);
+  }
+
+  return {
+    alreadyVerified: false,
+    expiresInSeconds: Math.floor(EMAIL_OTP_TTL_MS / 1000),
+    resendAvailableInSeconds: Math.floor(EMAIL_OTP_RESEND_COOLDOWN_MS / 1000),
+    ...(process.env.NODE_ENV !== 'production' ? { devOtp: otp } : {}),
+  };
+}
+
+export const resendEmailVerification = async (userId) => {
+  const user = await loadUserForEmailVerification(userId);
+
+  if (user.emailVerified) {
+    return {
+      alreadyVerified: true,
+      user: sanitizeUser(user),
+      resendAvailableInSeconds: 0,
+    };
+  }
+
+  const result = await issueEmailVerificationOtp(user);
+
+  return {
+    alreadyVerified: false,
+    user: sanitizeUser(user),
+    expiresInSeconds: result.expiresInSeconds,
+    resendAvailableInSeconds: result.resendAvailableInSeconds,
+    ...(result.devOtp ? { otp: result.devOtp } : {}),
+  };
+};
+
+export const verifyEmailOtp = async (userId, rawOtp) => {
+  const otp = String(rawOtp || '').trim();
+
+  if (!/^\d{6}$/.test(otp)) {
+    throw new ApiError(400, 'Enter the 6-digit verification code');
+  }
+
+  const user = await loadUserForEmailVerification(userId);
+
+  if (user.emailVerified) {
+    return { user: sanitizeUser(user), alreadyVerified: true };
+  }
+
+  if (!user.emailVerificationOTP || !user.emailVerificationExpires) {
+    throw new ApiError(400, 'No verification code found. Request a new code.');
+  }
+
+  if (new Date(user.emailVerificationExpires).getTime() <= Date.now()) {
+    user.emailVerificationOTP = undefined;
+    user.emailVerificationExpires = undefined;
+    user.emailVerificationAttempts = 0;
+    await user.save({ validateBeforeSave: false });
+    throw new ApiError(400, 'Verification code expired. Request a new code.');
+  }
+
+  if ((user.emailVerificationAttempts || 0) >= EMAIL_OTP_MAX_ATTEMPTS) {
+    user.emailVerificationOTP = undefined;
+    user.emailVerificationExpires = undefined;
+    user.emailVerificationAttempts = 0;
+    await user.save({ validateBeforeSave: false });
+    throw new ApiError(429, 'Too many invalid attempts. Request a new code.');
+  }
+
+  const hashed = hashToken(otp);
+  if (hashed !== user.emailVerificationOTP) {
+    user.emailVerificationAttempts = (user.emailVerificationAttempts || 0) + 1;
+    const remaining = EMAIL_OTP_MAX_ATTEMPTS - user.emailVerificationAttempts;
+    await user.save({ validateBeforeSave: false });
+
+    if (remaining <= 0) {
+      user.emailVerificationOTP = undefined;
+      user.emailVerificationExpires = undefined;
+      user.emailVerificationAttempts = 0;
+      await user.save({ validateBeforeSave: false });
+      throw new ApiError(429, 'Too many invalid attempts. Request a new code.');
+    }
+
+    throw new ApiError(
+      400,
+      `Invalid verification code. ${remaining} attempt${remaining === 1 ? '' : 's'} remaining.`
+    );
+  }
+
+  user.emailVerified = true;
+  user.emailVerificationOTP = undefined;
+  user.emailVerificationExpires = undefined;
+  user.emailVerificationAttempts = 0;
+  user.emailVerificationLastSentAt = undefined;
+  await user.save({ validateBeforeSave: false });
+
+  return { user: sanitizeUser(user), alreadyVerified: false };
+};
+

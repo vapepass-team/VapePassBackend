@@ -1,21 +1,69 @@
+import fs from 'fs/promises';
+import path from 'path';
+import crypto from 'crypto';
+import { fileURLToPath } from 'url';
 import { cloudinary } from '../config/cloudinary.js';
 import { env } from '../config/env.js';
 import { ApiError } from '../utils/constants.js';
 
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const LOCAL_LOGO_DIR = path.join(__dirname, '../../public/uploads/logos');
+
 const isCloudinaryConfigured = () =>
   Boolean(env.cloudinary.cloudName && env.cloudinary.apiKey && env.cloudinary.apiSecret);
 
+function mimeToExt(mimetype = '') {
+  switch (String(mimetype).toLowerCase()) {
+    case 'image/jpeg':
+      return '.jpg';
+    case 'image/png':
+      return '.png';
+    case 'image/webp':
+      return '.webp';
+    case 'image/gif':
+      return '.gif';
+    default:
+      return '.png';
+  }
+}
+
+function getPublicApiBase() {
+  const base = (env.apiPublicUrl || `http://localhost:${env.port}`).replace(/\/+$/, '');
+  if (base.includes('localhost:3000')) {
+    return `http://localhost:${env.port}`;
+  }
+  return base;
+}
+
 /**
- * Upload an image buffer to Cloudinary.
- * Returns the secure URL of the uploaded asset.
+ * Persist logo locally when Cloudinary is not configured (dev / simple hosts).
+ * Files are served from /uploads/logos via express.static(public).
  */
-export const uploadImage = async (fileBuffer, folder = 'vapepass/logos') => {
+async function uploadImageLocally(fileBuffer, mimetype) {
+  await fs.mkdir(LOCAL_LOGO_DIR, { recursive: true });
+  const filename = `${crypto.randomBytes(16).toString('hex')}${mimeToExt(mimetype)}`;
+  await fs.writeFile(path.join(LOCAL_LOGO_DIR, filename), fileBuffer);
+  return `${getPublicApiBase()}/uploads/logos/${filename}`;
+}
+
+/**
+ * Upload an image buffer to Cloudinary (or local public/uploads fallback).
+ * Returns the public URL of the uploaded asset.
+ */
+export const uploadImage = async (
+  fileBuffer,
+  folder = 'vapepass/logos',
+  mimetype = 'image/png'
+) => {
   if (!fileBuffer) {
     throw new ApiError(400, 'No file provided for upload');
   }
 
   if (!isCloudinaryConfigured()) {
-    throw new ApiError(503, 'Image upload is not configured. Set Cloudinary credentials in .env');
+    console.warn(
+      '[cloudinary] Not configured — saving logo to public/uploads/logos. Set CLOUDINARY_* for production CDN uploads.'
+    );
+    return uploadImageLocally(fileBuffer, mimetype);
   }
 
   return new Promise((resolve, reject) => {

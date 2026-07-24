@@ -10,16 +10,16 @@ import {
 import * as authService from '../services/auth.service.js';
 
 export const register = asyncHandler(async (req, res) => {
-  const { user, store, accessToken, refreshToken } = await authService.registerUser(
-    req.body
-  );
+  const { user, store, accessToken, refreshToken, emailVerification } =
+    await authService.registerUser(req.body);
 
   setRefreshTokenCookie(res, refreshToken);
 
-  return sendSuccess(res, 201, 'Registration successful', {
+  return sendSuccess(res, 201, 'Registration successful. Please verify your email.', {
     user,
     store,
     accessToken,
+    emailVerification,
   });
 });
 
@@ -109,5 +109,34 @@ export const refresh = asyncHandler(async (req, res) => {
   return sendSuccess(res, 200, 'Token refreshed', {
     accessToken,
     user: sanitizeUser(user),
+  });
+});
+
+export const verifyEmail = asyncHandler(async (req, res) => {
+  const result = await authService.verifyEmailOtp(req.user._id, req.body.otp);
+
+  return sendSuccess(
+    res,
+    200,
+    result.alreadyVerified ? 'Email already verified' : 'Email verified successfully',
+    { user: result.user }
+  );
+});
+
+export const resendVerification = asyncHandler(async (req, res) => {
+  const result = await authService.resendEmailVerification(req.user._id);
+
+  if (result.alreadyVerified) {
+    return sendSuccess(res, 200, 'Email already verified', {
+      user: result.user,
+      alreadyVerified: true,
+    });
+  }
+
+  return sendSuccess(res, 200, 'A new verification code has been sent', {
+    user: result.user,
+    expiresInSeconds: result.expiresInSeconds,
+    resendAvailableInSeconds: result.resendAvailableInSeconds,
+    ...(result.otp ? { otp: result.otp, note: 'OTP included for development testing only' } : {}),
   });
 });

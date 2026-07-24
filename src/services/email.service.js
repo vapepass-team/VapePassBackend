@@ -365,6 +365,36 @@ export async function sendPasswordResetEmail(to, resetToken) {
   });
 }
 
+/**
+ * Sends email verification OTP. Logs the code when no provider is configured.
+ */
+export async function sendEmailVerificationOtp(to, otp) {
+  if (!isEmailConfigured()) {
+    console.warn(`[email] No provider configured. Email verification OTP for ${to}: ${otp}`);
+    return { sent: false, devFallback: true };
+  }
+
+  return sendMail({
+    to,
+    subject: 'Verify your VapePass email',
+    text: [
+      'Verify your VapePass email address.',
+      '',
+      `Your verification code is: ${otp}`,
+      '',
+      'This code expires in 10 minutes. If you did not create an account, you can ignore this email.',
+    ].join('\n'),
+    html: `
+      <div style="font-family:Inter,system-ui,sans-serif;max-width:480px;margin:0 auto;padding:24px;">
+        <h2 style="color:#0c0c12;margin:0 0 12px;">Verify your email</h2>
+        <p style="color:#5c5c6d;line-height:1.6;">Enter this code to verify your VapePass account email address:</p>
+        <p style="margin:24px 0;font-size:28px;letter-spacing:0.35em;font-weight:700;color:#0c0c12;">${otp}</p>
+        <p style="color:#9494a6;font-size:13px;line-height:1.5;">This code expires in 10 minutes. If you did not create an account, you can safely ignore this email.</p>
+      </div>
+    `,
+  });
+}
+
 export async function sendSubscriptionActivatedEmail(to, payload) {
   const email = buildSubscriptionActivatedEmail(payload);
   return sendMail({ to, ...email });
