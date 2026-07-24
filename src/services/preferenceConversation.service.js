@@ -502,8 +502,77 @@ export function isDisplayableInventoryBrand(raw, siteBlocks = []) {
 }
 
 /**
+ * When Shopify/Woo `vendor` is the storefront name, real brands usually live in the
+ * product title (e.g. "Lost Mary MT50K … - Berry Bomb Ice").
+ * Extract a clean brand candidate from the title — never from store/site metadata.
+ */
+export function inferBrandFromProductName(name) {
+  let left = String(name || '')
+    .split(/\s[-–|]\s/)[0]
+    .trim();
+  if (!left) return null;
+
+  left = left
+    .replace(/^\[(?:clearance|sale|promo|new)\]\s*/i, '')
+    .replace(/^#/, '')
+    .replace(/\s{2,}/g, ' ')
+    .trim();
+
+  // Cut before size / hardware / marketing tails so "Lost Mary MT50K Rechargeable…" → "Lost Mary"
+  const stopRe =
+    /\b(\d+\s*mL|\d+\s*mg(?:\/?\s*mL)?|\d+\s*k(?:\s*puff)?|puff|disposable|rechargeable|replacement|prefilled|pod|pods|device|kit|vape|e-?liquids?|e-?juices?|salt\s*nic|battery|included|special|flash\s*sale|launch\s*special|from\s+\w+)\b/i;
+  const stopMatch = left.match(stopRe);
+  if (stopMatch && typeof stopMatch.index === 'number' && stopMatch.index > 0) {
+    left = left.slice(0, stopMatch.index).trim();
+  }
+
+  // Drop trailing model / line codes: MT50K, G2, Level X, Mode MAX, BC Pro, LOOP MAX…
+  left = left
+    .replace(
+      /\s+(level\s*x(?:\s*g\d+)?|mode\s*max|unleashed|g\d+|bc\s*pro|loop(?:\s*max(?:\s*x)?)?|titan(?:\s*max)?|maglink|svopp|rufpuf|ripper(?:\s*x+)?|x\s*geek\s*bar|stlth\/allo).*$/i,
+      ''
+    )
+    .replace(/\s+\d+k\b.*$/i, '')
+    .replace(/\s+[A-Z]{1,4}\d{2,}[A-Z0-9]*\b.*$/i, '')
+    .replace(/\s+\d{3,}\b.*$/i, '') // "Linvo Rave 60000 Pro"
+    .replace(/\s{2,}/g, ' ')
+    .trim();
+
+  // Keep at most 4 words (covers "STLTH X Geek Bar", "Flavour Beast")
+  const words = left.split(/\s+/).filter(Boolean);
+  if (!words.length) return null;
+  if (words.length > 4) left = words.slice(0, 3).join(' ');
+
+  if (left.length < 2 || left.length > 40) return null;
+  // Reject titles that are still mostly product descriptors
+  if (stopRe.test(left)) return null;
+  // Reject domain-shaped leftovers before display validation
+  if (/\.(com|ca|net|org|io|co|shop)\b/i.test(left)) return null;
+  return left;
+}
+
+/**
+ * Prefer a validated scraped `product.brand`; if that is store/vendor junk, fall back
+ * to a title-inferred brand that still passes display validation.
+ */
+export function resolveProductBrandForSuggestion(product, siteBlocks = []) {
+  const raw = String(product?.brand || '').trim();
+  if (raw && isDisplayableInventoryBrand(raw, siteBlocks)) {
+    return raw;
+  }
+
+  const inferred = inferBrandFromProductName(product?.name);
+  if (inferred && isDisplayableInventoryBrand(inferred, siteBlocks)) {
+    return inferred;
+  }
+
+  return null;
+}
+
+/**
  * Top legitimate product brands in scraped inventory (optionally scoped to a product type).
- * Never invents brands from store/site metadata — only `product.brand` values that pass validation.
+ * Uses validated `product.brand` values, and title-inferred brands when the brand field
+ * is store/vendor junk — never invents brands from store name / domain metadata.
  * @param {object|null} [siteContext] optional { storeName, websiteUrl, productPageUrl, allowedHostname }
  */
 export function listInventoryBrands(inventory = [], productType = null, limit = 8, siteContext = null) {
@@ -517,20 +586,37 @@ export function listInventoryBrands(inventory = [], productType = null, limit = 
   const counts = new Map();
 
   for (const product of scoped) {
-    const raw = String(product.brand || '').trim();
-    if (!isDisplayableInventoryBrand(raw, siteBlocks)) continue;
+    const resolved = resolveProductBrandForSuggestion(product, siteBlocks);
+    if (!resolved) continue;
 
-    const key = foldText(raw);
+    const key = foldText(resolved);
     if (!key) continue;
     const prev = counts.get(key);
     // Prefer the cleanest casing / spacing we've seen for this brand
     const name =
-      prev?.name && prev.name.length <= raw.length && !/[._]/.test(prev.name) ? prev.name : raw;
-    counts.set(key, { name, n: (prev?.n || 0) + 1 });
+      prev?.name && prev.name.length <= resolved.length && !/[._]/.test(prev.name)
+        ? prev.name
+        : resolved;
+    const fromField = Boolean(
+      product?.brand && foldText(product.brand) === key && isDisplayableInventoryBrand(product.brand, siteBlocks)
+    );
+    counts.set(key, {
+      name,
+      n: (prev?.n || 0) + 1,
+      // Prefer brands that appear on the brand field when ranking ties later
+      fieldHits: (prev?.fieldHits || 0) + (fromField ? 1 : 0),
+    });
   }
 
   return [...counts.values()]
-    .sort((a, b) => b.n - a.n || a.name.localeCompare(b.name))
+    // Require at least 2 products for title-only brands to avoid one-off title noise
+    .filter((row) => row.n >= 2 || row.fieldHits >= 1)
+    .sort(
+      (a, b) =>
+        b.n - a.n ||
+        (b.fieldHits || 0) - (a.fieldHits || 0) ||
+        a.name.localeCompare(b.name)
+    )
     .slice(0, limit)
     .map((row) => row.name);
 }
