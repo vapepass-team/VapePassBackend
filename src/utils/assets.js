@@ -1,36 +1,107 @@
 /**
- * Resolves stored asset references (store logos) into absolute URLs.
+ * Resolves public API / asset URLs for the current environment.
  *
  * Locally uploaded files are persisted as root-relative paths so a single
  * database row stays valid across environments. Legacy rows that baked in a
- * loopback host are healed on read, since those URLs are unreachable from any
- * machine other than the one that uploaded them.
+ * loopback host are healed on read.
+ *
+ * Embed script URLs must never expose localhost to production customers, so
+ * getPublicApiBase prefers API_PUBLIC_URL when it is a real public host, and
+ * otherwise falls back to the origin of the incoming API request.
  */
 
 import { env } from '../config/env.js';
 
 const LOOPBACK_HOSTS = new Set(['localhost', '127.0.0.1', '0.0.0.0', '::1']);
 
-export function getPublicApiBase() {
-  const base = String(env.apiPublicUrl || `http://localhost:${env.port}`).replace(/\/+$/, '');
-  // API_PUBLIC_URL falls back to CLIENT_URL, which points at the frontend port
-  if (base.includes('localhost:3000')) {
-    return `http://localhost:${env.port}`;
+function isLoopbackUrl(value) {
+  const raw = String(value || '').trim();
+  if (!raw) return false;
+  try {
+    const url = new URL(raw.includes('://') ? raw : `http://${raw}`);
+    return LOOPBACK_HOSTS.has(url.hostname.toLowerCase());
+  } catch {
+    return /localhost|127\.0\.0\.1/i.test(raw);
   }
-  return base;
 }
 
-export function resolveAssetUrl(value) {
+/**
+ * Public origin of the API from the incoming request (Railway / reverse proxy).
+ * Returns null for loopback hosts so we never "fix" a misconfig with another.
+ */
+export function getRequestPublicOrigin(req) {
+  if (!req) return null;
+
+  const forwardedHost = String(
+    req.get?.('x-forwarded-host') || req.headers?.['x-forwarded-host'] || ''
+  )
+    .split(',')[0]
+    .trim();
+  const host = (
+    forwardedHost || String(req.get?.('host') || req.headers?.host || '')
+  )
+    .split(',')[0]
+    .trim();
+
+  if (!host) return null;
+
+  const hostname = host.replace(/:\d+$/, '').toLowerCase();
+  if (LOOPBACK_HOSTS.has(hostname)) return null;
+
+  const forwardedProto = String(
+    req.get?.('x-forwarded-proto') || req.headers?.['x-forwarded-proto'] || ''
+  )
+    .split(',')[0]
+    .trim()
+    .toLowerCase();
+  const proto = forwardedProto || (req.secure ? 'https' : 'http');
+
+  return `${proto}://${host}`.replace(/\/+$/, '');
+}
+
+/**
+ * Absolute public base for the API (no trailing slash).
+ * @param {{ requestOrigin?: string|null }} [options]
+ */
+export function getPublicApiBase(options = {}) {
+  const configured = String(env.apiPublicUrl || '').trim().replace(/\/+$/, '');
+  const requestOrigin = String(options.requestOrigin || '').trim().replace(/\/+$/, '');
+
+  // Explicit production/staging URL wins when it is not a loopback address
+  if (configured && !isLoopbackUrl(configured) && !configured.includes('localhost:3000')) {
+    return configured;
+  }
+
+  // Misconfigured production (API_PUBLIC_URL left as localhost) — use the host
+  // the client actually reached so embed scripts stay customer-ready
+  if (requestOrigin && !isLoopbackUrl(requestOrigin)) {
+    return requestOrigin;
+  }
+
+  if (configured) {
+    // CLIENT_URL was historically used as a fallback and points at the frontend
+    if (configured.includes('localhost:3000')) {
+      return `http://localhost:${env.port}`;
+    }
+    return configured;
+  }
+
+  return `http://localhost:${env.port}`;
+}
+
+export function resolveAssetUrl(value, options = {}) {
   const raw = String(value || '').trim();
   if (!raw) return null;
 
-  if (raw.startsWith('/')) return `${getPublicApiBase()}${raw}`;
+  const base = getPublicApiBase(options);
+
+  if (raw.startsWith('/')) return `${base}${raw}`;
   if (!/^https?:\/\//i.test(raw)) return raw;
 
   try {
     const url = new URL(raw);
     if (LOOPBACK_HOSTS.has(url.hostname) && url.pathname.startsWith('/uploads/')) {
-      return `${getPublicApiBase()}${url.pathname}`;
+      return `${base}${url.pathname}`;
     }
   } catch {
     return raw;
@@ -40,8 +111,8 @@ export function resolveAssetUrl(value) {
 }
 
 /** Applies logo resolution to a plain (lean) store object */
-export function withResolvedStoreAssets(store) {
+export function withResolvedStoreAssets(store, options = {}) {
   if (!store) return store;
   if (!store.logo) return store;
-  return { ...store, logo: resolveAssetUrl(store.logo) };
+  return { ...store, logo: resolveAssetUrl(store.logo, options) };
 }

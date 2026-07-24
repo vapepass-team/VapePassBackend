@@ -101,6 +101,12 @@ export const env = {
   },
   cronSecret: process.env.CRON_SECRET,
   enableInternalCron: process.env.ENABLE_INTERNAL_CRON === 'true',
-  apiPublicUrl: process.env.API_PUBLIC_URL || process.env.CLIENT_URL || 'http://localhost:5000',
+  /**
+   * Public HTTPS origin of THIS API (no trailing slash).
+   * Used for embed script /widget.js and uploaded asset URLs.
+   * Do NOT fall back to CLIENT_URL — that is the frontend origin.
+   * Example: https://your-app.up.railway.app
+   */
+  apiPublicUrl: String(process.env.API_PUBLIC_URL || '').trim() || null,
   nodeEnv: process.env.NODE_ENV || 'development',
 };

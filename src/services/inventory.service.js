@@ -1,6 +1,5 @@
 import Store from '../models/Store.js';
 import StoreInventory from '../models/StoreInventory.js';
-import { env } from '../config/env.js';
 import { ApiError } from '../utils/constants.js';
 import { filterRecommendableProducts } from '../utils/compliance.js';
 import {
@@ -8,6 +7,7 @@ import {
   hasServiceableSubscription,
   isStoreSubscriptionActive,
 } from '../utils/subscriptionAccess.js';
+import { getPublicApiBase } from '../utils/assets.js';
 import { scrapeStoreProducts } from './scraper.service.js';
 import { sanitizeProductPageUrl } from './scraper.catalog.js';
 import { buildAndStoreRecommendationTaxonomy } from './taxonomy.service.js';
@@ -38,24 +38,17 @@ export function getInventoryRefreshQuota(store) {
   };
 }
 
-function getApiPublicBase() {
-  const base = (env.apiPublicUrl || `http://localhost:${env.port}`).replace(/\/+$/, '');
-  if (base.includes('localhost:3000')) {
-    return `http://localhost:${env.port}`;
-  }
-  return base;
+export function buildWidgetScriptUrl(publicApiBase) {
+  const base = String(publicApiBase || getPublicApiBase()).replace(/\/+$/, '');
+  return `${base}/widget.js`;
 }
 
-export function buildWidgetScriptUrl() {
-  return `${getApiPublicBase()}/widget.js`;
-}
-
-export function buildEmbedCode(storeId) {
+export function buildEmbedCode(storeId, publicApiBase) {
   // Widget stays hidden until the host site age gate sets age_verified / vapepass_site_age_verified.
   // After that, the loader iframes the Next.js /embed chat UI (same components as the marketing site).
   // data-skip-site-age keeps the current age-verification testing/config behavior.
   return `<script
-  src="${buildWidgetScriptUrl()}"
+  src="${buildWidgetScriptUrl(publicApiBase)}"
   data-store-id="${storeId}"
   data-skip-site-age="true"
   async
@@ -302,7 +295,7 @@ export async function syncStoreInventory(storeId, options = {}) {
 /**
  * Force-stop an in-progress inventory scrape. Already-saved products are kept.
  */
-export async function stopInventorySync(user) {
+export async function stopInventorySync(user, options = {}) {
   if (!user.storeId) {
     throw new ApiError(404, 'No store associated with this account');
   }
@@ -333,7 +326,7 @@ export async function stopInventorySync(user) {
     await store.save();
   }
 
-  const status = await getAssistantStatus(user);
+  const status = await getAssistantStatus(user, options);
   return {
     stopped: true,
     message: 'Scrape stop requested. Products already saved will be kept.',
@@ -368,7 +361,7 @@ export async function maybeRunInitialInventorySync(storeId) {
 /**
  * Manual Refresh Inventory — limited to 2 per calendar month (UTC) after initial scrape.
  */
-export async function refreshInventory(user) {
+export async function refreshInventory(user, options = {}) {
   if (!user.storeId) {
     throw new ApiError(404, 'No store associated with this account');
   }
@@ -394,7 +387,7 @@ export async function refreshInventory(user) {
       started: true,
       isInitial: true,
       quota: getInventoryRefreshQuota(store),
-      status: await getAssistantStatus(user),
+      status: await getAssistantStatus(user, options),
     };
   }
 
@@ -423,7 +416,7 @@ export async function refreshInventory(user) {
     started: true,
     isInitial: false,
     quota: getInventoryRefreshQuota(await Store.findById(store._id)),
-    status: await getAssistantStatus(user),
+    status: await getAssistantStatus(user, options),
   };
 }
 
@@ -570,8 +563,10 @@ function normalizeUrl(url) {
 
 /**
  * Assistant status payload for the store dashboard.
+ * @param {object} user
+ * @param {{ requestOrigin?: string|null }} [options]
  */
-export async function getAssistantStatus(user) {
+export async function getAssistantStatus(user, options = {}) {
   if (!user.storeId) {
     throw new ApiError(404, 'No store associated with this account');
   }
@@ -581,6 +576,7 @@ export async function getAssistantStatus(user) {
     throw new ApiError(404, 'Store not found');
   }
 
+  const publicApiBase = getPublicApiBase({ requestOrigin: options.requestOrigin });
   const products = await getStoreInventory(store._id, { activeOnly: false });
   const active = products.filter((p) => p.isActive);
   const recommendable = filterRecommendableProducts(active);
@@ -643,15 +639,15 @@ export async function getAssistantStatus(user) {
     },
     recommendationTaxonomyStatus: store.recommendationTaxonomyStatus || 'idle',
     recommendationTaxonomyBuiltAt: store.recommendationTaxonomyBuiltAt,
-    embedCode: buildEmbedCode(store._id),
-    widgetScriptUrl: buildWidgetScriptUrl(),
+    embedCode: buildEmbedCode(store._id, publicApiBase),
+    widgetScriptUrl: buildWidgetScriptUrl(publicApiBase),
   };
 }
 
 /**
  * Finish Setup / Go Live — unlocks the public chatbot for an authorized, subscribed store.
  */
-export async function goLive(user) {
+export async function goLive(user, options = {}) {
   if (!user.storeId) {
     throw new ApiError(404, 'No store associated with this account');
   }
@@ -680,5 +676,5 @@ export async function goLive(user) {
   store.assistantEnabled = true;
   await store.save();
 
-  return getAssistantStatus(user);
+  return getAssistantStatus(user, options);
 }

@@ -1,7 +1,12 @@
 import { sendSuccess } from '../utils/apiResponse.js';
 import { asyncHandler } from '../middleware/asyncHandler.js';
+import { getRequestPublicOrigin } from '../utils/assets.js';
 import * as assistantService from '../services/assistant.service.js';
 import * as inventoryService from '../services/inventory.service.js';
+
+function statusOptions(req) {
+  return { requestOrigin: getRequestPublicOrigin(req) };
+}
 
 export const getWidgetConfig = asyncHandler(async (req, res) => {
   const config = await assistantService.getWidgetConfig(req.params.storeId, {
@@ -29,12 +34,12 @@ export const sendMessage = asyncHandler(async (req, res) => {
 });
 
 export const goLive = asyncHandler(async (req, res) => {
-  const status = await inventoryService.goLive(req.user);
+  const status = await inventoryService.goLive(req.user, statusOptions(req));
   return sendSuccess(res, 200, 'Store is live. Chatbot is now active.', { status });
 });
 
 export const getAssistantStatus = asyncHandler(async (req, res) => {
-  const status = await inventoryService.getAssistantStatus(req.user);
+  const status = await inventoryService.getAssistantStatus(req.user, statusOptions(req));
   return sendSuccess(res, 200, 'Assistant status retrieved', { status });
 });
 
@@ -45,23 +50,23 @@ export const setProductPageUrl = asyncHandler(async (req, res) => {
     req.body.productPageUrl,
     { syncNow }
   );
-  const status = await inventoryService.getAssistantStatus(req.user);
+  const status = await inventoryService.getAssistantStatus(req.user, statusOptions(req));
   return sendSuccess(res, 200, 'Product page URL saved', { store, status });
 });
 
 export const syncInventory = asyncHandler(async (req, res) => {
   // Prefer quota-aware refresh for dashboard "Refresh Inventory"
-  const result = await inventoryService.refreshInventory(req.user);
+  const result = await inventoryService.refreshInventory(req.user, statusOptions(req));
   return sendSuccess(res, 202, 'Inventory refresh started', result);
 });
 
 export const refreshInventory = asyncHandler(async (req, res) => {
-  const result = await inventoryService.refreshInventory(req.user);
+  const result = await inventoryService.refreshInventory(req.user, statusOptions(req));
   return sendSuccess(res, 202, 'Inventory refresh started', result);
 });
 
 export const stopInventorySync = asyncHandler(async (req, res) => {
-  const result = await inventoryService.stopInventorySync(req.user);
+  const result = await inventoryService.stopInventorySync(req.user, statusOptions(req));
   return sendSuccess(res, 200, 'Inventory scrape stop requested', result);
 });
 
