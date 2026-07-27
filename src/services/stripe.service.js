@@ -422,6 +422,8 @@ export const createCheckoutSession = async (store, user) => {
     line_items: lineItems,
     success_url: `${env.clientUrl}/subscribe?billing=success&session_id={CHECKOUT_SESSION_ID}`,
     cancel_url: `${env.clientUrl}/subscribe?billing=cancelled`,
+    // Keep checkout in the Price currency only (no PKR / presentment switcher)
+    adaptive_pricing: { enabled: false },
     metadata: { storeId: String(store._id) },
     subscription_data: {
       metadata: { storeId: String(store._id) },
