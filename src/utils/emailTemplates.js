@@ -76,13 +76,11 @@ function getClientUrl() {
   return String(env.clientUrl || '').replace(/\/+$/, '');
 }
 
-/** Support + documentation destinations shown in every email footer */
+/** Shared destinations used in customer emails (no docs/support page links — those 404) */
 function getSupportLinks() {
   const client = getClientUrl();
   return {
     supportEmail: String(env.email?.supportContact || '').trim(),
-    docsUrl: String(env.links?.docsUrl || '').trim() || `${client}/docs`,
-    supportUrl: String(env.links?.supportUrl || '').trim() || `${client}/contact`,
     dashboardUrl: `${client}/dashboard`,
     settingsUrl: `${client}/settings`,
   };
@@ -155,13 +153,12 @@ export function wrapEmailLayout({ title, bodyHtml, preheader = '', internal = fa
   const links = getSupportLinks();
   const footerLinks = internal
     ? ''
-    : `
+    : links.supportEmail
+      ? `
               <p style="margin:0 0 10px;font-size:12px;color:${BRAND.light};line-height:1.6;">
-                <a href="${links.docsUrl}" style="color:${BRAND.purple};text-decoration:none;">Documentation</a>
-                &nbsp;•&nbsp;
-                <a href="${links.supportUrl}" style="color:${BRAND.purple};text-decoration:none;">Support</a>
-                ${links.supportEmail ? `&nbsp;•&nbsp;<a href="mailto:${links.supportEmail}" style="color:${BRAND.purple};text-decoration:none;">${links.supportEmail}</a>` : ''}
-              </p>`;
+                <a href="mailto:${links.supportEmail}" style="color:${BRAND.purple};text-decoration:none;">${links.supportEmail}</a>
+              </p>`
+      : '';
 
   return `<!DOCTYPE html>
 <html lang="en">
@@ -400,9 +397,8 @@ export function buildWelcomeEmail({ ownerName, storeName }) {
     '3. Sync your inventory so the assistant learns your catalogue.',
     '4. Copy your embed script and paste it into your website.',
     '',
-    `Documentation: ${links.docsUrl}`,
-    `Support: ${links.supportUrl}`,
-    links.supportEmail ? `Email us: ${links.supportEmail}` : '',
+    links.supportEmail ? `Need a hand? Email us at ${links.supportEmail}.` : 'Need a hand? Reach out from the dashboard.',
+    'We also offer free setup assistance from the dashboard.',
     '',
     'Regards,',
     'Team VapePass',
@@ -437,12 +433,11 @@ export function buildWelcomeEmail({ ownerName, storeName }) {
       </table>
       ${buildButtonHtml('Go to your dashboard', links.dashboardUrl)}
       <p style="margin:20px 0 0;color:${BRAND.muted};font-size:14px;line-height:1.6;">
-        Need a hand? Read the <a href="${links.docsUrl}" style="color:${BRAND.purple};text-decoration:none;">documentation</a>
-        or <a href="${links.supportUrl}" style="color:${BRAND.purple};text-decoration:none;">contact support</a>${
+        Need a hand?${
           links.supportEmail
-            ? ` at <a href="mailto:${links.supportEmail}" style="color:${BRAND.purple};text-decoration:none;">${links.supportEmail}</a>`
+            ? ` Email us at <a href="mailto:${links.supportEmail}" style="color:${BRAND.purple};text-decoration:none;">${links.supportEmail}</a>.`
             : ''
-        }. We also offer free setup assistance from the dashboard.
+        } We also offer free setup assistance from the dashboard.
       </p>
     `,
   });
@@ -543,11 +538,15 @@ export function buildPasswordChangedEmail({ ownerName, changedAt }) {
     `Your VapePass account password was changed on ${when}.`,
     '',
     'If this was you, no further action is needed.',
-    `If you did not make this change, reset your password immediately: ${links.supportUrl}`,
+    links.supportEmail
+      ? `If you did not make this change, reset your password immediately and contact us at ${links.supportEmail}.`
+      : 'If you did not make this change, reset your password immediately.',
     '',
     'Regards,',
     'Team VapePass',
-  ].join('\n');
+  ]
+    .filter(Boolean)
+    .join('\n');
 
   const html = wrapEmailLayout({
     title: 'Password Changed',
@@ -559,7 +558,11 @@ export function buildPasswordChangedEmail({ ownerName, changedAt }) {
       </p>
       <p style="margin:0;color:${BRAND.muted};font-size:14px;line-height:1.6;">
         If this was you, no further action is needed. If you did not make this change, reset your password
-        immediately and <a href="${links.supportUrl}" style="color:${BRAND.purple};text-decoration:none;">contact support</a>.
+        immediately${
+          links.supportEmail
+            ? ` and contact us at <a href="mailto:${links.supportEmail}" style="color:${BRAND.purple};text-decoration:none;">${links.supportEmail}</a>`
+            : ''
+        }.
       </p>
     `,
   });
