@@ -864,8 +864,8 @@ function looksLikeEmptyPodHardware(product) {
 
 /**
  * Pod systems / kits / replacement pods / device kits — product NAME wins.
- * Category labels like "E-Liquids" must not waive a kit title (e.g. Relx Infinity 2 Kit
- * scraped under an E-Liquids collection).
+ * Category labels like "E-Liquids" must not waive a kit/device title
+ * (e.g. "Relx Infinity 2 Kit", "Oxva Xlim Se 2 30w").
  */
 function looksLikePodOrKitHardware(product) {
   const name = productNameHaystack(product);
@@ -884,6 +884,17 @@ function looksLikePodOrKitHardware(product) {
   // Bare device / starter kits in the product name — always hardware
   if (
     /\b(kits?|devices?|box\s*mods?|mods?\b|aio|all[- ]in[- ]one|starter\s*kits?|vape\s*kits?|pod\s*mods?)\b/i.test(
+      name
+    )
+  ) {
+    return true;
+  }
+  // Wattage / battery / device-edition signals — never bottled e-liquid
+  // e.g. "Oxva Xlim Se 2 30w (Voice Edition)"
+  if (/\b\d{1,3}\s*w(?:att)?s?\b/i.test(name)) return true;
+  if (/\b\d{3,5}\s*m(?:ah|Ah)\b/i.test(name)) return true;
+  if (
+    /\b(voice\s*edition|oled|tft|touch\s*screen|smart\s*display|adjustable\s*watt(?:age)?|variable\s*watt(?:age)?|max\s*output|power\s*output|\d+\s*w\s*output)\b/i.test(
       name
     )
   ) {
@@ -970,8 +981,13 @@ export function matchesProductType(product, productType) {
         ) ||
         disposableSignal ||
         podHardwareSignal ||
-        // Kits / devices / mods in the name — category "E-Liquids" must not waive this
+        // Kits / devices / wattage / mods in the name — category "E-Liquids" must not waive this
         /\b(kits?|devices?|box\s*mods?|mods?\b|aio|starter\s*kits?|vape\s*kits?|pod\s*systems?|pod\s*kits?|mesh\s*pods?|empty\s*pods?)\b/i.test(
+          name
+        ) ||
+        /\b\d{1,3}\s*w(?:att)?s?\b/i.test(name) ||
+        /\b\d{3,5}\s*m(?:ah|Ah)\b/i.test(name) ||
+        /\b(voice\s*edition|oled|tft|smart\s*display|adjustable\s*watt|variable\s*watt|max\s*output)\b/i.test(
           name
         );
       return !titleContradicts;
