@@ -314,10 +314,16 @@ export function evaluatePreferenceCompleteness(prefs = {}, inventory = [], siteC
   const typePool = (inventory || []).filter((item) => matchesProductType(item, p.productType));
   if (!typePool.length) {
     const label = TYPE_LABELS[p.productType] || p.productType || 'that category';
+    const available = summarizeInventoryOfferings(inventory)
+      .map((t) => TYPE_LABELS[t])
+      .filter(Boolean);
+    const examples = available.length
+      ? available.slice(0, 4).join(', ')
+      : 'disposables, pods, or accessories';
     return {
       ready: false,
       missing: 'productType',
-      ask: `I don't currently have recommendable ${label} in this store's inventory. Want to try a different product type — e-liquids, disposables, pods, or accessories?`,
+      ask: `I don't currently have recommendable ${label} in this store's inventory. Want to try a different product type — for example ${examples}?`,
     };
   }
 

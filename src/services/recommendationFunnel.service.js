@@ -969,11 +969,23 @@ async function advancePreferenceConversation(store, session, userMessage, invent
 
   // Category lock: once a product type is chosen, it sticks for the whole pass.
   // "No Preference" means any brand WITHIN that category — never a category change.
-  let lockedProductType =
-    priorState.lockedProductType ||
-    priorProductType ||
-    preferences.productType ||
-    null;
+  // Exceptions: a brand-new pass, or answering "try a different product type".
+  const answeringProductTypePrompt =
+    (lastAsked === 'productType' || priorLastAsked === 'productType') &&
+    preferences.productType &&
+    preferences.productType !== priorProductType;
+
+  let lockedProductType = null;
+  if (intentKind === 'new' || answeringProductTypePrompt) {
+    // Fresh pass / explicit category switch — never revive the prior lock
+    lockedProductType = preferences.productType || null;
+  } else {
+    lockedProductType =
+      priorState.lockedProductType ||
+      priorProductType ||
+      preferences.productType ||
+      null;
+  }
 
   // Frontend may send "No Preference (any brand, keep category: E-Liquid)"
   if (!lockedProductType && isNoBrandPreference(userMessage)) {
@@ -1024,6 +1036,17 @@ async function advancePreferenceConversation(store, session, userMessage, invent
       defaultAsk: evaluation.ask,
     });
 
+    // Empty / unavailable category: unlock so the next answer can switch types
+    // (e.g. "E-Liquids" empty → user says "Pod Systems" must not stay locked on e_liquid)
+    const emptyCategoryAsk =
+      missing === 'productType' &&
+      Boolean(preferences.productType) &&
+      !(inventory || []).some((item) => matchesProductType(item, preferences.productType));
+
+    const prefsForState = emptyCategoryAsk
+      ? { ...preferences, productType: null }
+      : preferences;
+
     session.funnelState = {
       phase: 'prefer',
       currentStepId: null,
@@ -1032,8 +1055,10 @@ async function advancePreferenceConversation(store, session, userMessage, invent
       variantPath: [],
       path: intentKind === 'new' ? [] : activeState.path || [],
       preferenceHints: preferences.rawHints || [],
-      preferences,
-      lockedProductType: preferences.productType || lockedProductType || null,
+      preferences: prefsForState,
+      lockedProductType: emptyCategoryAsk
+        ? null
+        : preferences.productType || lockedProductType || null,
       lastAsked: missing,
       askAttempts,
       lastAskText: reply,
