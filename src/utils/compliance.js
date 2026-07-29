@@ -250,14 +250,21 @@ export function detectsConversationEnd(message) {
   if (!text) return false;
 
   // Clear shopping / refine intent — not a closing
+  // Note: do not treat bare "thanks" companions as shopping intent
   if (
-    /\b(another recomm\w*|something else|start over|start fresh|show me another|looking for|more ice|less ice|sweeter|different flavor|disposable|e-?liquid|fruity|menthol)\b/i.test(
+    /\b(another recomm\w*|something else|start over|start fresh|show me another|looking for|more ice|less ice|sweeter|different flavor)\b/i.test(
       text
-    )
+    ) &&
+    !/\b(thanks|thank you|appreciate|thats all|that is all|all set)\b/i.test(text)
   ) {
     return false;
   }
-  // "recommend something else" is restart; bare "recommend" alone is rare — only block with object
+  if (
+    /\b(disposable|e-?liquid|fruity|menthol)\b/i.test(text) &&
+    !/\b(thanks|thank you|appreciate|thats all|that is all|all set|goodbye|bye)\b/i.test(text)
+  ) {
+    return false;
+  }
   if (/\brecommend (another|something|a |an |me )\b/i.test(text)) {
     return false;
   }
@@ -270,15 +277,26 @@ export function detectsConversationEnd(message) {
   ) {
     return true;
   }
-  if (/\b(thanks|thank you)(\s+(so much|a lot|very much))?\b/.test(text) && text.split(/\s+/).length <= 8) {
+  if (
+    /^(thanks|thank you)(\s+(so much|a lot|very much|for (your )?help|thats all|that is all|that will be all))?$/.test(
+      text
+    )
+  ) {
     return true;
   }
-  if (/\b(appreciate it|appreciated|many thanks)\b/.test(text)) {
+  if (
+    /\b(thanks|thank you)\b/.test(text) &&
+    text.split(/\s+/).length <= 12 &&
+    !/\b(another|different|recommend|looking for|more ice|less ice)\b/i.test(text)
+  ) {
+    return true;
+  }
+  if (/\b(appreciate it|appreciated|many thanks|thanks a bunch|thanks a ton)\b/.test(text)) {
     return true;
   }
 
   // Soft decline of further help
-  if (/\b(no thanks|no thank you|nah thanks|nope thanks)\b/.test(text)) {
+  if (/\b(no thanks|no thank you|nah thanks|nope thanks|no thankyou)\b/.test(text)) {
     return true;
   }
   if (/^(no|nope|nah)\s+(thanks|thank you)$/.test(text)) {
@@ -287,7 +305,7 @@ export function detectsConversationEnd(message) {
 
   // Done / satisfied
   if (
-    /\b(that'?s (all|it|perfect|great|fine|enough)|that is (all|it|perfect)|i'?m (good|done|all set|fine)|that will be all|all good|all set|i'?m all set)\b/.test(
+    /\b(thats (all|it|perfect|great|fine|enough)|that is (all|it|perfect)|that will be all|im (good|done|all set|fine)|i am (good|done|all set|fine)|all good|all set|im all set)\b/.test(
       text
     )
   ) {

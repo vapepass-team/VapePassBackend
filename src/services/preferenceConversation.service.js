@@ -82,13 +82,21 @@ export function extractShoppingPreferences(message) {
   };
 
   // Product type — more specific phrases before broad "pods"
-  if (hasConcept('eliquid') || /\be[\s-]?liquids?\b|\be[\s-]?juices?\b|\bsalt\s*nic/i.test(clean)) {
+  // "Pod Juice" is an e-liquid brand family, not a pod system
+  if (
+    hasConcept('eliquid') ||
+    /\be[\s-]?liquids?\b|\be[\s-]?juices?\b|\bsalt\s*nic|\bpod\s*juice\b/i.test(clean)
+  ) {
     prefs.productType = 'e_liquid';
   } else if (hasConcept('disposable') || /\bdisposables?\b|\bdispo\b/i.test(clean)) {
     prefs.productType = 'disposable';
   } else if (/\bpre-?filled\b/i.test(clean) || /\bprefilled\s*pods?\b/i.test(clean)) {
     prefs.productType = 'prefilled';
-  } else if (/\bpod\s*systems?\b/i.test(clean) || hasConcept('pod') || /\bpods?\b/i.test(clean)) {
+  } else if (
+    /\bpod\s*systems?\b/i.test(clean) ||
+    /\bpod\s*kits?\b/i.test(clean) ||
+    ((hasConcept('pod') || /\bpods?\b/i.test(clean)) && !/\b(juice|liquid|salt)\b/i.test(clean))
+  ) {
     prefs.productType = 'pod';
   } else if (
     hasConcept('device') ||
@@ -335,10 +343,11 @@ export function evaluatePreferenceCompleteness(prefs = {}, inventory = [], siteC
 
   // Brand preference — REQUIRED before any recommendation (never skip)
   if (p.brand == null || p.brand === '') {
-    const examples = listInventoryBrands(inventory, p.productType, 5, siteContext);
+    // Show every brand available in this category (dynamically from inventory)
+    const examples = listInventoryBrands(inventory, p.productType, 0, siteContext);
     const ask = examples.length
       ? [
-          'Do you have a preferred brand? For example:',
+          'Do you have a preferred brand? Available brands for this category:',
           ...examples.map((name) => `• ${name}`),
           'You can also name another brand in stock, or reply with "No Preference."',
         ].join('\n')
@@ -355,11 +364,25 @@ export function evaluatePreferenceCompleteness(prefs = {}, inventory = [], siteC
 }
 
 const BRAND_NO_PREF_RE =
-  /\b(no preference|any brand|any other brand|other brands?|doesn't matter|doesnt matter|dont care|don't care|whatever|surprise me|you (pick|choose)|no brand)\b/i;
+  /\b(no\s*preference|no\s*pref|any\s*brand|any\s*other\s*brand|other\s*brands?|doesn'?t\s*matter|doesnt\s*matter|don'?t\s*care|dont\s*care|whatever|surprise\s*me|you\s+(pick|choose)|no\s*brand|either\s*(is\s*)?fine|either\s*way|all\s*brands?|any\s*is\s*fine)\b/i;
 
-/** Flavor / preference words that must never be treated as brand names */
+/** True when the user explicitly declines a brand preference. */
+export function isNoBrandPreference(message) {
+  const clean = sanitizeUserHint(message);
+  const text = foldText(clean);
+  if (!text) return false;
+  if (BRAND_NO_PREF_RE.test(text)) return true;
+  return /^(no|none|nah|idk|n\/a|any|nope)$/i.test(String(clean || '').trim());
+}
+
+/** Flavor / preference words that must never be treated as brand names.
+ *  Do NOT include juice/liquid/pod — those appear in real brand names (e.g. Pod Juice). */
 const FLAVOR_NOT_BRAND_RE =
-  /\b(fruit|fruity|ice|iced|icy|sweet|sweeter|dessert|candy|gummy|menthol|mint|minty|mango|berry|berries|citrus|tropical|melon|grape|peach|lemon|lime|orange|strawberry|blueberry|vanilla|tobacco|smooth|cooling|disposable|liquid|juice|accessory)\b/i;
+  /\b(fruit|fruity|ice|iced|icy|sweet|sweeter|dessert|candy|gummy|menthol|mint|minty|mango|berry|berries|citrus|tropical|melon|grape|peach|lemon|lime|orange|strawberry|blueberry|vanilla|tobacco|smooth|cooling)\b/i;
+
+/** Whole-message category words that are not brands */
+const CATEGORY_NOT_BRAND_RE =
+  /^(e-?liquids?|e-?juices?|disposables?|pod\s*systems?|prefilled\s*pods?|devices?|accessories|coils?|cartridges?|batteries|pouches?|juice|liquid|pods?)$/i;
 
 /** Empty / placeholder brand strings scraped into inventory */
 const BRAND_PLACEHOLDER_RE =
@@ -574,6 +597,7 @@ export function resolveProductBrandForSuggestion(product, siteBlocks = []) {
  * Uses validated `product.brand` values, and title-inferred brands when the brand field
  * is store/vendor junk — never invents brands from store name / domain metadata.
  * @param {object|null} [siteContext] optional { storeName, websiteUrl, productPageUrl, allowedHostname }
+ * @param {number} [limit] max brands to return; `0` / falsy / Infinity = return all
  */
 export function listInventoryBrands(inventory = [], productType = null, limit = 8, siteContext = null) {
   const list = Array.isArray(inventory) ? inventory : [];
@@ -608,17 +632,20 @@ export function listInventoryBrands(inventory = [], productType = null, limit = 
     });
   }
 
-  return [...counts.values()]
-    // Require at least 2 products for title-only brands to avoid one-off title noise
-    .filter((row) => row.n >= 2 || row.fieldHits >= 1)
+  const ranked = [...counts.values()]
+    // Include every brand that appears at least once in the scoped category
+    .filter((row) => row.n >= 1)
     .sort(
       (a, b) =>
         b.n - a.n ||
         (b.fieldHits || 0) - (a.fieldHits || 0) ||
         a.name.localeCompare(b.name)
     )
-    .slice(0, limit)
     .map((row) => row.name);
+
+  const cap = Number(limit);
+  if (!Number.isFinite(cap) || cap <= 0) return ranked;
+  return ranked.slice(0, cap);
 }
 
 /**
@@ -631,21 +658,29 @@ export function matchBrandPreference(message, inventory = [], productType = null
   const text = foldText(clean);
   if (!text) return null;
 
-  if (
-    BRAND_NO_PREF_RE.test(text) ||
-    /^(no|none|nah|idk|n\/a|any)$/i.test(String(clean || '').trim())
-  ) {
+  if (isNoBrandPreference(clean)) {
     return 'any';
   }
 
-  // Never treat flavor / cooling answers as a brand
-  if (FLAVOR_NOT_BRAND_RE.test(text) && !/\bbrand\b/i.test(text)) {
+  // Never treat pure flavor / category answers as a brand
+  if (CATEGORY_NOT_BRAND_RE.test(text)) {
     return null;
   }
+  if (FLAVOR_NOT_BRAND_RE.test(text) && !/\bbrand\b/i.test(text)) {
+    const remainder = text.replace(FLAVOR_NOT_BRAND_RE, ' ').replace(/\s+/g, ' ').trim();
+    // "mint" / "fruity ice" → not a brand; "Pod Juice" / "Naked 100" → keep
+    if (!remainder || remainder.length < 2) {
+      return null;
+    }
+  }
 
-  const brands = listInventoryBrands(inventory, productType, 80, siteContext).filter(
-    (b) => !FLAVOR_NOT_BRAND_RE.test(foldText(b))
-  );
+  const brands = listInventoryBrands(inventory, productType, 0, siteContext).filter((b) => {
+    const folded = foldText(b);
+    if (CATEGORY_NOT_BRAND_RE.test(folded)) return false;
+    // Keep real brands that merely contain a flavor word (e.g. "Iceberg")
+    const remainder = folded.replace(FLAVOR_NOT_BRAND_RE, ' ').replace(/\s+/g, ' ').trim();
+    return Boolean(remainder);
+  });
   const ranked = [...brands].sort((a, b) => b.length - a.length);
   for (const brand of ranked) {
     const folded = foldText(brand);
@@ -658,7 +693,7 @@ export function matchBrandPreference(message, inventory = [], productType = null
 
   // Short free-text answer while answering the brand question — accept as typed brand
   if (clean && clean.length <= 40 && clean.split(/\s+/).length <= 4) {
-    if (!FLAVOR_NOT_BRAND_RE.test(clean)) {
+    if (!FLAVOR_NOT_BRAND_RE.test(clean) && !isNoBrandPreference(clean)) {
       return clean;
     }
   }
@@ -906,7 +941,12 @@ export function matchesProductType(product, productType) {
       const titleContradicts =
         /\b(510|empty\s*cart|empty\s*cartridge|cartridges?|replacement\s*pods?|disposables?)\b/i.test(
           title
-        ) || disposableSignal || podHardwareSignal;
+        ) ||
+        disposableSignal ||
+        podHardwareSignal ||
+        // Pod hardware / kits mistyped as juice — keep bottled juice brands like "Pod Juice"
+        (/\b(pod\s*systems?|pod\s*kits?|mesh\s*pods?|empty\s*pods?)\b/i.test(title) &&
+          !TYPE_HAYSTACK_RE.e_liquid.test(title));
       return !titleContradicts;
     }
     if (actual === 'other' || !actual) {
@@ -1224,7 +1264,7 @@ export function applyContextualAnswer(message, lastAsked, preferences = {}) {
   }
 
   if (lastAsked === 'brand') {
-    if (BRAND_NO_PREF_RE.test(t) || /^(no|none|nah|idk|n\/a)$/i.test(raw.trim())) {
+    if (isNoBrandPreference(raw) || isNoBrandPreference(t)) {
       next.brand = 'any';
       return { preferences: next, unclear: null, resolved: true };
     }
