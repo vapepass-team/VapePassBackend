@@ -172,7 +172,18 @@ export function isProductBcCompliant(product) {
   }
 
   const volume = Number(product.volumeMl);
-  const type = (product.productType || '').toLowerCase();
+  let type = (product.productType || '').toLowerCase();
+
+  // Bottled juice is often scraped as prefilled/pod. Apply bottle limits (30ml),
+  // not pod limits (2ml), when the SKU is clearly a bottle.
+  if (
+    Number.isFinite(volume) &&
+    volume > BC_LIMITS.maxPodMl &&
+    (type === 'prefilled' || type === 'pod' || type === 'other' || !type) &&
+    looksLikeBottledJuiceForCompliance(product)
+  ) {
+    type = 'e_liquid';
+  }
 
   if (Number.isFinite(volume)) {
     if ((type === 'pod' || type === 'cartridge' || type === 'prefilled') && volume > BC_LIMITS.maxPodMl) {
@@ -184,6 +195,33 @@ export function isProductBcCompliant(product) {
   }
 
   return true;
+}
+
+/**
+ * True for classic bottled e-liquid SKUs (30/60/100ml or E-Liquids collection),
+ * even when productType was mis-tagged as prefilled during scrape.
+ */
+function looksLikeBottledJuiceForCompliance(product) {
+  const name = [product?.name, product?.flavor, product?.variantName]
+    .filter(Boolean)
+    .join(' ')
+    .toLowerCase();
+  const category = [product?.category, product?.subcategory].filter(Boolean).join(' ').toLowerCase();
+
+  // Puff-count disposables with a tank volume must stay on pod/disposable rules
+  if (/\b\d{2,3}\s*k\b/i.test(name) || /\b\d{4,5}\s*puffs?\b/i.test(name)) return false;
+  if (/\b(disposables?|puff\s*bar|vape\s*bar)\b/i.test(name)) return false;
+
+  if (/\b(e[\s_-]?liquids?|e[\s_-]?juices?|vape[\s_-]?juices?|nic(?:otine)?\s*salts?|salt\s*nic|freebase)\b/i.test(category)) {
+    return true;
+  }
+  if (/\b(e[\s_-]?liquids?|e[\s_-]?juices?|vape[\s_-]?juices?|nic(?:otine)?\s*salts?|salt\s*nic|freebase)\b/i.test(name)) {
+    return true;
+  }
+  if (/(?:^|[^a-z0-9])(30|60|100|120)\s*ml(?:[^a-z0-9]|$)/i.test(name)) return true;
+
+  const volume = Number(product?.volumeMl);
+  return Number.isFinite(volume) && volume >= 30 && volume <= 120;
 }
 
 /**

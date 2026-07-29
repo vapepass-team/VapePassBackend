@@ -58,6 +58,11 @@ function productOffersType(product, type) {
     return !nameLooksLikeDisposable(product) && !looksLikePodOrKitHardware(product);
   }
 
+  // Bottled juice mis-tagged as prefilled / pod / other during scrape
+  if (wanted === 'e_liquid' && looksLikeBottledELiquid(product)) {
+    return true;
+  }
+
   return false;
 }
 
@@ -813,10 +818,44 @@ function nameLooksLikeDisposable(product) {
   if (/\b(rechargeable\s*battery|smart\s*display|draw[- ]?activate)\b/i.test(name) && /\bpuffs?\b/i.test(name)) {
     return true;
   }
-  if (/\b\d{2,3}\s*k\b/i.test(name) && /\bpuff/i.test(name)) return true;
+  // "40K" / "12K" puff devices rarely spell out "puff" in the title
+  if (/\b\d{2,3}\s*k\b/i.test(name)) return true;
+  if (/\b\d{4,5}\s*puffs?\b/i.test(name)) return true;
   if (/\b\d{4,5}\b/.test(name) && /\b(disposables?|puff\s*bar|vape\s*bar|puffs?)\b/i.test(name)) {
     return true;
   }
+  return false;
+}
+
+/**
+ * Bottled e-liquid signals — catches juice SKUs mis-tagged as prefilled/pod/other.
+ * Requires classic bottle sizes (30/60/100ml) or explicit juice language; never puff bars.
+ */
+function looksLikeBottledELiquid(product) {
+  if (looksLikePodOrKitHardware(product) || nameLooksLikeDisposable(product)) {
+    return false;
+  }
+  const name = productNameHaystack(product);
+  if (!name) return false;
+  if (/\b(pods?|disposables?|cartridges?|kits?|mesh\s*pod|replacement\s*pod|empty\s*pod)\b/i.test(name)) {
+    // Allow "pod juice" brand-style juice bottles
+    if (!/\bpod\s*juice\b/i.test(name) && !/\b(30|60|100|120)\s*m[lL]\b/.test(name)) {
+      return false;
+    }
+  }
+  if (TYPE_HAYSTACK_RE.e_liquid.test(name)) {
+    if (/\b(510|empty\s*cart|empty\s*cartridge|cartridges?|replacement\s*pods?)\b/i.test(name)) {
+      return false;
+    }
+    return true;
+  }
+  // Explicit bottle size in the product name (Flavour Beast 30ml, etc.)
+  // Note: do not require a word-boundary between digits and "ml" (30ml is one token).
+  if (/(?:^|[^a-z0-9])(30|60|100|120)\s*ml(?:[^a-z0-9]|$)/i.test(name)) return true;
+
+  const ml = Number(product.volumeMl);
+  if (Number.isFinite(ml) && (ml === 30 || ml === 60 || ml === 100 || ml === 120)) return true;
+  if (Number.isFinite(ml) && ml >= 30 && ml <= 120) return true;
   return false;
 }
 
@@ -921,22 +960,26 @@ const FLAVOR_SIGNAL_RE =
 
 /** Empty mesh / replacement pods — never treat as flavored prefilled pods */
 function looksLikeEmptyPodHardware(product) {
+  // Name / title only — marketing copy ("perfect for refillable pod systems")
+  // in descriptions must never flip bottled e-liquid into hardware.
+  const name = productNameHaystack(product);
   const title = productTitleHaystack(product);
-  const hay = productHaystack(product);
-  if (/\b\d+(?:\.\d+)?\s*ohm\b/i.test(title) || /\b\d+(?:\.\d+)?\s*ohm\b/i.test(hay)) return true;
-  if (/\b(mesh\s*pod|empty\s*pod|replacement\s*pod|refillable\s*pod|pod\s*coil)\b/i.test(title)) {
+  if (/\b\d+(?:\.\d+)?\s*ohm\b/i.test(name) || /\b\d+(?:\.\d+)?\s*ohm\b/i.test(title)) return true;
+  if (/\b(mesh\s*pod|empty\s*pod|replacement\s*pod|pod\s*coil)\b/i.test(name)) {
     return true;
   }
-  if (/\b(mesh\s*pod|empty\s*pod|replacement\s*pod|refillable\s*pod|pod\s*coil)\b/i.test(hay)) {
+  if (/\b(mesh\s*pod|empty\s*pod|replacement\s*pod|pod\s*coil)\b/i.test(title)) {
     return true;
   }
+  // "refillable pod" in the product NAME is hardware; in descriptions it is juice marketing
+  if (/\brefillable\s*pods?\b/i.test(name)) return true;
   // Pod hardware with no flavor / prefilled language
   if (
-    /\bpods?\b/i.test(title) &&
-    !TYPE_HAYSTACK_RE.prefilled.test(title) &&
-    !FLAVOR_SIGNAL_RE.test(title) &&
+    /\bpods?\b/i.test(name) &&
+    !TYPE_HAYSTACK_RE.prefilled.test(name) &&
+    !FLAVOR_SIGNAL_RE.test(name) &&
     !looksLikeDisposable(product) &&
-    /\b(device|kit|mod|ohm|mesh|coil|cartridge|atomizer|system)\b/i.test(title)
+    /\b(device|kit|mod|ohm|mesh|coil|cartridge|atomizer|system)\b/i.test(name)
   ) {
     return true;
   }
@@ -1043,8 +1086,22 @@ export function matchesProductType(product, productType) {
 
   // Haystack overrides mis-tagged Shopify types for the e-liquid boundary
   if (wanted === 'e_liquid') {
-    // Name-level disposable / hardware veto only — category "Vape Juice" must not reject juice
-    if (actual === 'disposable' || nameLooksLikeDisposable(product) || podHardwareSignal) {
+    // Name-level disposable veto — never juice
+    if (actual === 'disposable' || nameLooksLikeDisposable(product)) {
+      return false;
+    }
+    // Bottled juice / E-Liquids collection — even when scrape typed the row as prefilled/pod
+    // (check BEFORE hardware veto so description marketing cannot hide juice)
+    if (looksLikeBottledELiquid(product)) {
+      return true;
+    }
+    if (
+      isELiquidCategoryLabel(product.category) ||
+      isELiquidCategoryLabel(product.subcategory)
+    ) {
+      return !podHardwareSignal;
+    }
+    if (podHardwareSignal) {
       return false;
     }
     if (['cartridge', 'coil', 'battery', 'accessory', 'device', 'pod', 'prefilled'].includes(actual)) {
@@ -1074,13 +1131,6 @@ export function matchesProductType(product, productType) {
         );
       return !titleContradicts;
     }
-    // Category labeled e-liquid with no conflicting hardware/disposable name
-    if (
-      isELiquidCategoryLabel(product.category) ||
-      isELiquidCategoryLabel(product.subcategory)
-    ) {
-      return !hardwareSignal || eLiquidSignal;
-    }
     if (actual === 'other' || !actual) {
       return eLiquidSignal;
     }
@@ -1097,7 +1147,15 @@ export function matchesProductType(product, productType) {
 
   // Flavored closed pods — never empty mesh / ohm replacement pods (even if mistyped)
   if (wanted === 'prefilled') {
-    if (disposableSignal || eLiquidSignal || looksLikeEmptyPodHardware(product)) return false;
+    // Never surface bottled juice (30ml etc.) as a prefilled pod
+    if (
+      disposableSignal ||
+      looksLikeBottledELiquid(product) ||
+      eLiquidSignal ||
+      looksLikeEmptyPodHardware(product)
+    ) {
+      return false;
+    }
     if (actual === 'prefilled') return true;
     if (TYPE_HAYSTACK_RE.prefilled.test(title) || TYPE_HAYSTACK_RE.prefilled.test(hay)) return true;
     if (
