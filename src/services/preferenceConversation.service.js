@@ -744,6 +744,14 @@ function productTitleHaystack(product) {
     .toLowerCase();
 }
 
+/** Product name / variant only — category must not waive kit/device rejection. */
+function productNameHaystack(product) {
+  return [product.name, product.flavor, product.variantName]
+    .filter(Boolean)
+    .join(' ')
+    .toLowerCase();
+}
+
 /** Related catalog types that may satisfy a preference (never cross e-liquid ↔ disposable ↔ device). */
 const TYPE_COMPAT = {
   e_liquid: new Set(['e_liquid']),
@@ -855,17 +863,30 @@ function looksLikeEmptyPodHardware(product) {
 }
 
 /**
- * Pod systems / kits / replacement pods — title wins over description copy
- * that mentions "e-juice capacity".
+ * Pod systems / kits / replacement pods / device kits — product NAME wins.
+ * Category labels like "E-Liquids" must not waive a kit title (e.g. Relx Infinity 2 Kit
+ * scraped under an E-Liquids collection).
  */
 function looksLikePodOrKitHardware(product) {
+  const name = productNameHaystack(product);
   const title = productTitleHaystack(product);
   if (looksLikeEmptyPodHardware(product)) return true;
+  if (/\b(pod\s*kits?|pod\s*systems?|replacement\s*pods?|empty\s*pods?|mesh\s*pods?)\b/i.test(name)) {
+    return true;
+  }
   if (/\b(pod\s*kits?|pod\s*systems?|replacement\s*pods?|empty\s*pods?|mesh\s*pods?)\b/i.test(title)) {
     return true;
   }
   // Colorway / kit SKUs like "Linvo Force Air Pod Kit 2mL - Dream Purple"
-  if (/\bpods?\b/i.test(title) && /\b(kits?|systems?|devices?)\b/i.test(title)) {
+  if (/\bpods?\b/i.test(name) && /\b(kits?|systems?|devices?)\b/i.test(name)) {
+    return true;
+  }
+  // Bare device / starter kits in the product name — always hardware
+  if (
+    /\b(kits?|devices?|box\s*mods?|mods?\b|aio|all[- ]in[- ]one|starter\s*kits?|vape\s*kits?|pod\s*mods?)\b/i.test(
+      name
+    )
+  ) {
     return true;
   }
   return false;
@@ -940,17 +961,19 @@ export function matchesProductType(product, productType) {
     if (hardwareSignal && !eLiquidSignal && actual !== 'e_liquid') {
       return false;
     }
-    // Trust stored e_liquid when the title does not contradict (disposables / empty carts / pod kits)
+    // Trust stored e_liquid when the product NAME does not contradict
     if (actual === 'e_liquid') {
+      const name = productNameHaystack(product);
       const titleContradicts =
         /\b(510|empty\s*cart|empty\s*cartridge|cartridges?|replacement\s*pods?|disposables?)\b/i.test(
-          title
+          name
         ) ||
         disposableSignal ||
         podHardwareSignal ||
-        // Pod hardware / kits mistyped as juice — keep bottled juice brands like "Pod Juice"
-        (/\b(pod\s*systems?|pod\s*kits?|mesh\s*pods?|empty\s*pods?)\b/i.test(title) &&
-          !TYPE_HAYSTACK_RE.e_liquid.test(title));
+        // Kits / devices / mods in the name — category "E-Liquids" must not waive this
+        /\b(kits?|devices?|box\s*mods?|mods?\b|aio|starter\s*kits?|vape\s*kits?|pod\s*systems?|pod\s*kits?|mesh\s*pods?|empty\s*pods?)\b/i.test(
+          name
+        );
       return !titleContradicts;
     }
     if (actual === 'other' || !actual) {
@@ -1085,6 +1108,12 @@ export function filterInventoryByPreferences(inventory = [], prefs = {}, options
   if (prefs.productType) {
     pool = pool.filter((p) => matchesProductType(p, prefs.productType));
     // Hard lock: empty means "nothing in this category", not "use full catalog"
+    if (!pool.length) return [];
+  }
+
+  // Extra safety: never let kit/device titles leak into bottled e-liquid recommendations
+  if (prefs.productType === 'e_liquid') {
+    pool = pool.filter((p) => !looksLikePodOrKitHardware(p) && !looksLikeDisposable(p));
     if (!pool.length) return [];
   }
 
