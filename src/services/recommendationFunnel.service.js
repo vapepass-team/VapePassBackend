@@ -529,6 +529,8 @@ async function completeVariantRecommendation(store, session, product, path = [])
     path,
     // Keep prefs so "more ice" / refine can continue this pass
     preferences: prior.preferences || emptyPreferences(),
+    lockedProductType:
+      prior.lockedProductType || prior.preferences?.productType || null,
     preferenceHints: prior.preferenceHints || [],
     lastAsked: null,
     askAttempts: {},
@@ -787,7 +789,8 @@ async function advancePreferenceConversation(store, session, userMessage, invent
   const siteContext = brandSuggestionSiteContext(store);
   const priorState = session.funnelState || {};
   const priorLastAsked = priorState.lastAsked || null;
-  const priorProductType = priorState.preferences?.productType || null;
+  const priorProductType =
+    priorState.lockedProductType || priorState.preferences?.productType || null;
 
   // Explicit "another recommendation" / start fresh — never skip discovery
   if (detectsRecommendationRestart(userMessage)) {
@@ -806,6 +809,7 @@ async function advancePreferenceConversation(store, session, userMessage, invent
       askAttempts: {},
       lastAskText: null,
       candidateProductIds: [],
+      lockedProductType: null,
     };
     return {
       reply,
@@ -817,6 +821,7 @@ async function advancePreferenceConversation(store, session, userMessage, invent
     };
   }
 
+  // "No Preference" on brand must NEVER start a new category pass
   const state = priorState;
   let intentKind = classifyRecommendationIntent(userMessage, {
     phase: state.phase,
@@ -827,8 +832,8 @@ async function advancePreferenceConversation(store, session, userMessage, invent
   // name happens to contain words like "pod" (e.g. "Pod Juice").
   if (
     intentKind === 'new' &&
-    priorLastAsked &&
-    ['brand', 'cooling', 'flavor'].includes(priorLastAsked) &&
+    ((priorLastAsked && ['brand', 'cooling', 'flavor'].includes(priorLastAsked)) ||
+      isNoBrandPreference(userMessage)) &&
     !detectsRecommendationRestart(userMessage)
   ) {
     intentKind = 'continue';
@@ -962,9 +967,43 @@ async function advancePreferenceConversation(store, session, userMessage, invent
     preferences = { ...preferences, brand: null };
   }
 
-  // Keep selected category locked for the rest of this pass
-  if (priorProductType && !preferences.productType) {
-    preferences.productType = priorProductType;
+  // Category lock: once a product type is chosen, it sticks for the whole pass.
+  // "No Preference" means any brand WITHIN that category — never a category change.
+  let lockedProductType =
+    priorState.lockedProductType ||
+    priorProductType ||
+    preferences.productType ||
+    null;
+
+  // Frontend may send "No Preference (any brand, keep category: E-Liquid)"
+  if (!lockedProductType && isNoBrandPreference(userMessage)) {
+    const keepMatch = String(userMessage || '').match(/keep\s+category:\s*([^)]+)/i);
+    const label = String(keepMatch?.[1] || '').trim().toLowerCase();
+    if (label) {
+      if (/e-?liquid|e liquid|eliquid|juice/.test(label)) lockedProductType = 'e_liquid';
+      else if (/disposable/.test(label)) lockedProductType = 'disposable';
+      else if (/prefilled|pre-filled/.test(label)) lockedProductType = 'prefilled';
+      else if (/pod/.test(label)) lockedProductType = 'pod';
+      else if (/device|kit/.test(label)) lockedProductType = 'device';
+      else if (/accessor/.test(label)) lockedProductType = 'accessory';
+      else if (/pouch/.test(label)) lockedProductType = 'pouch';
+    }
+  }
+
+  if (lockedProductType) {
+    preferences.productType = lockedProductType;
+  }
+
+  if (isNoBrandPreference(userMessage) && (lastAsked === 'brand' || lockedProductType)) {
+    preferences.brand = 'any';
+    if (lockedProductType) {
+      preferences.productType = lockedProductType;
+    }
+  }
+
+  // Refuse to recommend without a category — ask again instead of cross-category search
+  if ((preferences.brand === 'any' || preferences.brand) && !preferences.productType) {
+    preferences.brand = null;
   }
 
   const hint = preferencesToHint(preferences);
@@ -994,6 +1033,7 @@ async function advancePreferenceConversation(store, session, userMessage, invent
       path: intentKind === 'new' ? [] : activeState.path || [],
       preferenceHints: preferences.rawHints || [],
       preferences,
+      lockedProductType: preferences.productType || lockedProductType || null,
       lastAsked: missing,
       askAttempts,
       lastAskText: reply,
@@ -1083,6 +1123,7 @@ async function advancePreferenceConversation(store, session, userMessage, invent
       phase: 'prefer',
       preferences: hasHardBrand ? { ...preferences, brand: null } : preferences,
       preferenceHints: preferences.rawHints || [],
+      lockedProductType: preferences.productType || lockedProductType || null,
       path: [],
       candidateProductIds: [],
       excludedProductIds: activeState.excludedProductIds || [],
@@ -1191,6 +1232,7 @@ async function advancePreferenceConversation(store, session, userMessage, invent
     path: intentKind === 'new' ? [] : activeState.path || [],
     preferenceHints: preferences.rawHints || [],
     preferences,
+    lockedProductType: preferences.productType || lockedProductType || null,
     lastAsked: null,
     askAttempts: {},
     lastAskText: null,
@@ -1227,6 +1269,7 @@ export async function beginFunnel(store, session, options = {}) {
     path: [],
     preferenceHints: [],
     preferences: emptyPreferences(),
+    lockedProductType: null,
     lastAsked: null,
     askAttempts: {},
     lastAskText: null,

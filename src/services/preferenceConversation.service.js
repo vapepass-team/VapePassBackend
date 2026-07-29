@@ -369,10 +369,14 @@ const BRAND_NO_PREF_RE =
 /** True when the user explicitly declines a brand preference. */
 export function isNoBrandPreference(message) {
   const clean = sanitizeUserHint(message);
-  const text = foldText(clean);
+  // Strip enrichment tails like "(any brand, keep category: E-Liquid)"
+  const stripped = String(clean || '')
+    .replace(/\s*\([^)]*\)\s*$/g, '')
+    .trim();
+  const text = foldText(stripped || clean);
   if (!text) return false;
   if (BRAND_NO_PREF_RE.test(text)) return true;
-  return /^(no|none|nah|idk|n\/a|any|nope)$/i.test(String(clean || '').trim());
+  return /^(no|none|nah|idk|n\/a|any|nope)$/i.test(String(stripped || clean || '').trim());
 }
 
 /** Flavor / preference words that must never be treated as brand names.
@@ -1072,6 +1076,11 @@ export function filterInventoryByPreferences(inventory = [], prefs = {}, options
   const collapsePriority = options.collapsePriority !== false;
   let pool = Array.isArray(inventory) ? [...inventory] : [];
   if (!pool.length) return [];
+
+  // Brand "any" without a category must never fall through to the full catalog
+  if ((prefs.brand === 'any' || prefs.brand) && !prefs.productType) {
+    return [];
+  }
 
   if (prefs.productType) {
     pool = pool.filter((p) => matchesProductType(p, prefs.productType));

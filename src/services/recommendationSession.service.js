@@ -128,6 +128,7 @@ export function emptyRecommendationContext() {
     askAttempts: {},
     lastAskText: null,
     currentStepId: null,
+    lockedProductType: null,
   };
 }
 
@@ -154,6 +155,7 @@ export function resetRecommendationContext(session, { seedPreferences = null, ph
     ...empty,
     preferences,
     preferenceHints: preferences.rawHints || [],
+    lockedProductType: preferences.productType || null,
     excludedProductIds: [...priorExcluded],
   };
 
