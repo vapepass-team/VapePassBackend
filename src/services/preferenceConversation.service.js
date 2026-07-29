@@ -28,14 +28,48 @@ const TYPE_LABELS = {
 };
 
 /**
+ * True when inventory clearly stocks this family.
+ * Prefers recommendable matches; also trusts stored productType / e-liquid
+ * category names so real juice SKUs are never omitted from the opening list.
+ */
+function productOffersType(product, type) {
+  if (matchesProductType(product, type)) return true;
+
+  const actual = String(product?.productType || '').toLowerCase();
+  const wanted = String(type || '').toLowerCase();
+  if (!wanted) return false;
+
+  // Stored catalog type — include unless the product NAME clearly belongs elsewhere
+  if (actual === wanted) {
+    if (wanted === 'e_liquid') {
+      return !nameLooksLikeDisposable(product) && !looksLikePodOrKitHardware(product);
+    }
+    if (wanted === 'disposable') {
+      return nameLooksLikeDisposable(product) || actual === 'disposable';
+    }
+    return !looksLikePodOrKitHardware(product) || wanted === 'pod' || wanted === 'device';
+  }
+
+  // Category / collection labeled as e-liquids (even when productType is still "other")
+  if (
+    wanted === 'e_liquid' &&
+    (isELiquidCategoryLabel(product?.category) || isELiquidCategoryLabel(product?.subcategory))
+  ) {
+    return !nameLooksLikeDisposable(product) && !looksLikePodOrKitHardware(product);
+  }
+
+  return false;
+}
+
+/**
  * Summarize which product families exist in this store's inventory.
- * Only count types that would actually match recommendations (same rules as search).
+ * Lists every stocked family so E-Liquids are never dropped when juice is in stock.
  */
 export function summarizeInventoryOfferings(inventory = []) {
   const found = new Set();
   const list = Array.isArray(inventory) ? inventory : [];
   for (const type of Object.keys(TYPE_LABELS)) {
-    if (list.some((p) => matchesProductType(p, type))) found.add(type);
+    if (list.some((p) => productOffersType(p, type))) found.add(type);
   }
   return [...found];
 }
@@ -50,7 +84,7 @@ export function buildOpenShoppingPrompt(inventory = [], storeName = null, option
     .filter(Boolean);
   const carry =
     offerings.length > 0
-      ? offerings.slice(0, 5).join(', ')
+      ? offerings.join(', ')
       : 'E-Liquids, Disposables, Devices, Pods, and more';
 
   return [
@@ -92,6 +126,8 @@ export function extractShoppingPreferences(message) {
     prefs.productType = 'disposable';
   } else if (/\bpre-?filled\b/i.test(clean) || /\bprefilled\s*pods?\b/i.test(clean)) {
     prefs.productType = 'prefilled';
+  } else if (/\bcartridges?\b|\bcarts?\b/i.test(clean)) {
+    prefs.productType = 'cartridge';
   } else if (
     /\bpod\s*systems?\b/i.test(clean) ||
     /\bpod\s*kits?\b/i.test(clean) ||
@@ -302,7 +338,7 @@ export function evaluatePreferenceCompleteness(prefs = {}, inventory = [], siteC
     const types = summarizeInventoryOfferings(inventory);
     const labels = types.map((t) => TYPE_LABELS[t]).filter(Boolean);
     const examples = labels.length
-      ? labels.slice(0, 4).join(', ')
+      ? labels.join(', ')
       : 'e-liquids, disposables, pods, or accessories';
     return {
       ready: false,
@@ -318,7 +354,7 @@ export function evaluatePreferenceCompleteness(prefs = {}, inventory = [], siteC
       .map((t) => TYPE_LABELS[t])
       .filter(Boolean);
     const examples = available.length
-      ? available.slice(0, 4).join(', ')
+      ? available.join(', ')
       : 'disposables, pods, or accessories';
     return {
       ready: false,
@@ -758,6 +794,32 @@ function productNameHaystack(product) {
     .toLowerCase();
 }
 
+/** Flexible e-liquid section / collection labels (aligned with scraper.catalog). */
+function isELiquidCategoryLabel(name) {
+  if (!name) return false;
+  return /\b(e[\s_-]?liquids?|e[\s_-]?juices?|vape[\s_-]?juices?|vape[\s_-]?liquids?)\b/i.test(
+    String(name).replace(/[_-]+/g, ' ').trim()
+  );
+}
+
+/**
+ * Disposable signals from the product NAME only.
+ * Category strings like "Vape Juice" must never mark bottled juice as disposable.
+ */
+function nameLooksLikeDisposable(product) {
+  const name = productNameHaystack(product);
+  if (!name) return false;
+  if (TYPE_HAYSTACK_RE.disposable.test(name)) return true;
+  if (/\b(rechargeable\s*battery|smart\s*display|draw[- ]?activate)\b/i.test(name) && /\bpuffs?\b/i.test(name)) {
+    return true;
+  }
+  if (/\b\d{2,3}\s*k\b/i.test(name) && /\bpuff/i.test(name)) return true;
+  if (/\b\d{4,5}\b/.test(name) && /\b(disposables?|puff\s*bar|vape\s*bar|puffs?)\b/i.test(name)) {
+    return true;
+  }
+  return false;
+}
+
 /** Related catalog types that may satisfy a preference (never cross e-liquid ↔ disposable ↔ device). */
 const TYPE_COMPAT = {
   e_liquid: new Set(['e_liquid']),
@@ -793,9 +855,21 @@ const TYPE_HAYSTACK_RE = {
 
 /** Strong disposable signals — used to block e-liquid recommendations from mis-typed SKUs */
 function looksLikeDisposable(product) {
+  // Name-first: category "Vape Juice" / brand tokens must not flip bottled juice to disposable
+  if (nameLooksLikeDisposable(product)) return true;
+
   const hay = productHaystack(product);
   const title = productTitleHaystack(product);
-  if (TYPE_HAYSTACK_RE.disposable.test(hay) || TYPE_HAYSTACK_RE.disposable.test(title)) return true;
+  const name = productNameHaystack(product);
+
+  // Explicit disposable language outside a clear e-liquid category label
+  if (TYPE_HAYSTACK_RE.disposable.test(title)) {
+    if (TYPE_HAYSTACK_RE.e_liquid.test(title) && !TYPE_HAYSTACK_RE.disposable.test(name)) {
+      return false;
+    }
+    return true;
+  }
+
   if (/\b(rechargeable\s*battery|smart\s*display|draw[- ]?activate)\b/i.test(hay) && /\bpuffs?\b/i.test(hay)) {
     return true;
   }
@@ -803,7 +877,8 @@ function looksLikeDisposable(product) {
   if (/\b\d{2,3}\s*k\b/i.test(title) && /\bpuff/i.test(hay)) {
     return true;
   }
-  if (/\b\d{4,5}\b/.test(title) && /\b(disposable|vape|pro|bar|rave|beyond|puff)\b/i.test(title)) {
+  // Digits + disposable tokens — NAME only (never category "Vape …" + SKU year)
+  if (/\b\d{4,5}\b/.test(name) && /\b(disposables?|puff\s*bar|vape\s*bar|puffs?|rave|beyond)\b/i.test(name)) {
     return true;
   }
   return false;
@@ -968,7 +1043,8 @@ export function matchesProductType(product, productType) {
 
   // Haystack overrides mis-tagged Shopify types for the e-liquid boundary
   if (wanted === 'e_liquid') {
-    if (disposableSignal || podHardwareSignal || actual === 'disposable') {
+    // Name-level disposable / hardware veto only — category "Vape Juice" must not reject juice
+    if (actual === 'disposable' || nameLooksLikeDisposable(product) || podHardwareSignal) {
       return false;
     }
     if (['cartridge', 'coil', 'battery', 'accessory', 'device', 'pod', 'prefilled'].includes(actual)) {
@@ -985,7 +1061,7 @@ export function matchesProductType(product, productType) {
         /\b(510|empty\s*cart|empty\s*cartridge|cartridges?|replacement\s*pods?|disposables?)\b/i.test(
           name
         ) ||
-        disposableSignal ||
+        nameLooksLikeDisposable(product) ||
         podHardwareSignal ||
         // Kits / devices / wattage / mods in the name — category "E-Liquids" must not waive this
         /\b(kits?|devices?|box\s*mods?|mods?\b|aio|starter\s*kits?|vape\s*kits?|pod\s*systems?|pod\s*kits?|mesh\s*pods?|empty\s*pods?)\b/i.test(
@@ -997,6 +1073,13 @@ export function matchesProductType(product, productType) {
           name
         );
       return !titleContradicts;
+    }
+    // Category labeled e-liquid with no conflicting hardware/disposable name
+    if (
+      isELiquidCategoryLabel(product.category) ||
+      isELiquidCategoryLabel(product.subcategory)
+    ) {
+      return !hardwareSignal || eLiquidSignal;
     }
     if (actual === 'other' || !actual) {
       return eLiquidSignal;

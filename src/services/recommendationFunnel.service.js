@@ -995,10 +995,13 @@ async function advancePreferenceConversation(store, session, userMessage, invent
       if (/e-?liquid|e liquid|eliquid|juice/.test(label)) lockedProductType = 'e_liquid';
       else if (/disposable/.test(label)) lockedProductType = 'disposable';
       else if (/prefilled|pre-filled/.test(label)) lockedProductType = 'prefilled';
+      else if (/cartridge/.test(label)) lockedProductType = 'cartridge';
       else if (/pod/.test(label)) lockedProductType = 'pod';
       else if (/device|kit/.test(label)) lockedProductType = 'device';
       else if (/accessor/.test(label)) lockedProductType = 'accessory';
       else if (/pouch/.test(label)) lockedProductType = 'pouch';
+      else if (/coil/.test(label)) lockedProductType = 'coil';
+      else if (/batter/.test(label)) lockedProductType = 'battery';
     }
   }
 
