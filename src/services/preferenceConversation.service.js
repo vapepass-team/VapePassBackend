@@ -722,7 +722,9 @@ const TYPE_COMPAT = {
 };
 
 const TYPE_HAYSTACK_RE = {
-  e_liquid: /\b(e-?liquids?|e-?juices?|salt\s*nic|nic\s*salt|freebase|refill)\b/i,
+  // Align with scraper.catalog ELIQUID_CATEGORY_RE — spaces, hyphens, underscores, vape juice
+  e_liquid:
+    /\b(e[\s_-]?liquids?|e[\s_-]?juices?|vape[\s_-]?juices?|vape[\s_-]?liquids?|salt\s*nic(?:otine)?|nic(?:otine)?\s*salts?|freebase|refill)\b/i,
   disposable:
     /\b(disposables?|disposable\s*vapes?|puff\s*bar|vape\s*bar|\d{1,3}\s*k\s*puffs?|\d{1,3}(?:,\d{3})+\s*puffs?|up\s*to\s*\d[\d,]*\s*puffs?)\b/i,
   device:
@@ -758,20 +760,31 @@ function looksLikeDisposable(product) {
 function looksLikeHardwareOrEmptyCart(product) {
   const hay = productHaystack(product);
   const title = productTitleHaystack(product);
-  if (
-    /\b(510|empty\s*cart|empty\s*cartridge|cartridges?|atomizers?|tanks?|coils?|drip\s*tips?|glass(?:ware)?|chargers?|batter(?:y|ies)|replacement\s*parts?|replacement\s*pods?|accessories)\b/i.test(
-      title
-    ) ||
-    /\b(510|empty\s*cart|empty\s*cartridge|cartridges?|atomizers?|tanks?|coils?|drip\s*tips?|glass(?:ware)?|chargers?|batter(?:y|ies)|replacement\s*parts?|accessories)\b/i.test(
-      hay
-    )
-  ) {
-    // Allow real bottled juice that merely mentions "tank" in marketing copy only if clearly e-liquid in TITLE
-    if (TYPE_HAYSTACK_RE.e_liquid.test(title) && !/\b(510|empty\s*cart|empty\s*cartridge|cartridges?|replacement\s*pods?)\b/i.test(title)) {
+
+  // Strong hardware / empty-cart language (title or body)
+  const HARD_RE =
+    /\b(510|empty\s*cart|empty\s*cartridge|cartridges?|atomizers?|drip\s*tips?|chargers?|batter(?:y|ies)|replacement\s*parts?|replacement\s*pods?|accessories)\b/i;
+  // Soft tokens that often appear in real juice marketing ("glass bottle", "tank")
+  const SOFT_RE = /\b(tanks?|coils?|glass(?:ware)?)\b/i;
+
+  if (HARD_RE.test(title)) return true;
+
+  if (HARD_RE.test(hay)) {
+    // Waive body-only hard tokens when title/category clearly says bottled juice
+    if (
+      TYPE_HAYSTACK_RE.e_liquid.test(title) &&
+      !/\b(510|empty\s*cart|empty\s*cartridge|cartridges?|replacement\s*pods?)\b/i.test(title)
+    ) {
       return false;
     }
     return true;
   }
+
+  // Soft tokens only count in the title — description "glass bottle" must not veto juice
+  if (SOFT_RE.test(title) && !TYPE_HAYSTACK_RE.e_liquid.test(title)) {
+    return true;
+  }
+
   return false;
 }
 
@@ -824,17 +837,22 @@ function looksLikePodOrKitHardware(product) {
  * Description mentions of "e-juice" must not override a pod/kit/replacement title.
  */
 function looksLikeELiquid(product) {
-  if (
-    looksLikePodOrKitHardware(product) ||
-    looksLikeHardwareOrEmptyCart(product) ||
-    looksLikeDisposable(product)
-  ) {
+  if (looksLikePodOrKitHardware(product) || looksLikeDisposable(product)) {
     return false;
   }
 
   const title = productTitleHaystack(product);
-  // Explicit juice language in the TITLE is authoritative
-  if (TYPE_HAYSTACK_RE.e_liquid.test(title)) return true;
+  // Explicit juice language in title/category is authoritative
+  if (TYPE_HAYSTACK_RE.e_liquid.test(title)) {
+    if (/\b(510|empty\s*cart|empty\s*cartridge|cartridges?|replacement\s*pods?)\b/i.test(title)) {
+      return false;
+    }
+    return true;
+  }
+
+  if (looksLikeHardwareOrEmptyCart(product)) {
+    return false;
+  }
 
   // Title already says pod/kit/device/disposable — never promote via description
   if (/\b(pods?|kits?|devices?|disposables?|cartridges?|coils?|mods?)\b/i.test(title)) {
@@ -873,14 +891,25 @@ export function matchesProductType(product, productType) {
 
   // Haystack overrides mis-tagged Shopify types for the e-liquid boundary
   if (wanted === 'e_liquid') {
-    if (disposableSignal || hardwareSignal || podHardwareSignal || actual === 'disposable') {
+    if (disposableSignal || podHardwareSignal || actual === 'disposable') {
       return false;
     }
     if (['cartridge', 'coil', 'battery', 'accessory', 'device', 'pod', 'prefilled'].includes(actual)) {
       return false;
     }
-    // Never trust stored e_liquid alone — require real e-liquid signals
-    if (actual === 'e_liquid' || actual === 'other' || !actual) {
+    // Title clearly empty-cart / accessory hardware without juice signals
+    if (hardwareSignal && !eLiquidSignal && actual !== 'e_liquid') {
+      return false;
+    }
+    // Trust stored e_liquid when the title does not contradict (disposables / empty carts / pod kits)
+    if (actual === 'e_liquid') {
+      const titleContradicts =
+        /\b(510|empty\s*cart|empty\s*cartridge|cartridges?|replacement\s*pods?|disposables?)\b/i.test(
+          title
+        ) || disposableSignal || podHardwareSignal;
+      return !titleContradicts;
+    }
+    if (actual === 'other' || !actual) {
       return eLiquidSignal;
     }
     return false;
