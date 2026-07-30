@@ -63,30 +63,41 @@ function buildUnderagePatterns(legalAge) {
   const maxUnder = legalAge - 1;
   const patterns = [...STATIC_UNDERAGE_PATTERNS];
 
-  // Numeric ages below the legal threshold (e.g. "I am 17", "I'm 18" when legal is 19)
-  if (maxUnder >= 10) {
-    const numericParts = [];
-    for (let age = 10; age <= Math.min(maxUnder, 20); age += 1) {
+  const numericParts = [];
+  if (maxUnder >= 1) {
+    for (let age = 1; age <= Math.min(maxUnder, 20); age += 1) {
       numericParts.push(String(age));
     }
-    if (numericParts.length) {
-      patterns.push(new RegExp(`\\bi\\s*(?:am|'m|m)\\s*(?:${numericParts.join('|')})\\b`, 'i'));
-    }
   }
+  const ageAlt = numericParts.join('|');
 
-  // Word-form ages below the legal threshold
   const wordParts = Object.entries(WORD_AGES)
     .filter(([, value]) => value < legalAge)
     .map(([word]) => word);
-  if (wordParts.length) {
-    patterns.push(
-      new RegExp(`\\bi\\s*(?:am|'m|m)\\s*(?:${wordParts.join('|')})\\b`, 'i')
-    );
+  const wordAlt = wordParts.join('|');
+
+  if (ageAlt) {
+    // "I'm 16", "I am 16", "Im 16" (curly apostrophes normalized before test)
+    patterns.push(new RegExp(`\\bi\\s*(?:am|'m|m)\\s*(?:${ageAlt})\\b`, 'i'));
+    // "16 years old", "16 yo", "16 yrs"
+    patterns.push(new RegExp(`\\b(?:${ageAlt})\\s*(?:years?\\s*old|yo|yrs?)\\b`, 'i'));
+    // "my age is 16", "age 16"
+    patterns.push(new RegExp(`\\b(?:my\\s*)?age\\s*(?:is\\s*)?(?:${ageAlt})\\b`, 'i'));
+    // "only 16", "just 16"
+    patterns.push(new RegExp(`\\b(?:only|just)\\s*(?:${ageAlt})\\b`, 'i'));
   }
 
-  patterns.push(new RegExp(`\\bunder\\s*${legalAge}\\b`, 'i'));
-  patterns.push(new RegExp(`\\bnot\\s*${legalAge}\\b`, 'i'));
+  if (wordAlt) {
+    patterns.push(new RegExp(`\\bi\\s*(?:am|'m|m)\\s*(?:${wordAlt})\\b`, 'i'));
+    patterns.push(new RegExp(`\\b(?:${wordAlt})\\s+years?\\s*old\\b`, 'i'));
+  }
+
+  patterns.push(new RegExp(`\\bunder\\s*(?:the\\s*)?(?:age\\s*(?:of\\s*)?)?${legalAge}\\b`, 'i'));
+  patterns.push(new RegExp(`\\bbelow\\s*(?:the\\s*)?(?:age\\s*(?:of\\s*)?)?${legalAge}\\b`, 'i'));
+  patterns.push(new RegExp(`\\bnot\\s*(?:yet\\s*)?${legalAge}\\b`, 'i'));
   patterns.push(new RegExp(`\\bi'?m\\s+not\\s+(?:${legalAge}|old\\s+enough)\\b`, 'i'));
+  patterns.push(/\bnot\s+old\s+enough\b/i);
+  patterns.push(/\btoo\s+young\b/i);
 
   // Catch common "under 21" phrasing regardless of local age (often used in US context)
   if (legalAge !== 21) {
@@ -99,7 +110,8 @@ function buildUnderagePatterns(legalAge) {
 function buildAffirmativePatterns(legalAge) {
   const agePattern = buildAgeMatchPattern(legalAge);
   return [
-    /^(yes|yep|yeah|yup|yea|sure|of course|absolutely|correct|i am|i'm|im)\b/i,
+    // Do NOT treat bare "I am" / "I'm" as yes — underage ages often start that way
+    /^(yes|yep|yeah|yup|yea|sure|of course|absolutely|correct)\b/i,
     new RegExp(`\\b(${agePattern})\\s*(?:years?\\s*old|yo)?\\b`, 'i'),
     new RegExp(`\\bi\\s*(?:am|'m|m)\\s*(${agePattern})\\b`, 'i'),
     new RegExp(`\\bover\\s*${legalAge}\\b`, 'i'),
@@ -111,7 +123,7 @@ function buildNegativePatterns(legalAge) {
   return [
     /^(no|nope|nah|not really)\b/i,
     /\bi\s*(?:am|'m|m)\s*not\b/i,
-    new RegExp(`\\bunder\\s*${legalAge}\\b`, 'i'),
+    new RegExp(`\\bunder\\s*(?:the\\s*)?(?:age\\s*(?:of\\s*)?)?${legalAge}\\b`, 'i'),
     /\bunder\s*21\b/i,
   ];
 }
@@ -125,13 +137,28 @@ function buildAgeMatchPattern(legalAge) {
 }
 
 /**
+ * Normalize chat text before age checks (iOS/Safari curly apostrophes, spacing).
+ */
+export function normalizeAgeCheckText(message) {
+  return String(message || '')
+    .normalize('NFKC')
+    .replace(/[\u2018\u2019\u201A\u201B\u2032\u2035`]/g, "'")
+    .replace(/[\u201C\u201D\u201E\u201F]/g, '"')
+    .replace(/\u00A0/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+/**
  * Returns true if the message triggers an underage lock.
+ * Runs at every turn — including after age verification — so mid-chat
+ * admissions like "I'm 16" immediately end the session.
  * @param {string} message
  * @param {number} [legalAge=19]
  */
 export function detectsUnderage(message, legalAge = DEFAULT_LEGAL_AGE) {
   if (!message || typeof message !== 'string') return false;
-  const text = message.trim();
+  const text = normalizeAgeCheckText(message);
   if (!text) return false;
   return buildUnderagePatterns(legalAge).some((pattern) => pattern.test(text));
 }
@@ -144,7 +171,8 @@ export function detectsUnderage(message, legalAge = DEFAULT_LEGAL_AGE) {
  */
 export function interpretAgeReply(message, legalAge = DEFAULT_LEGAL_AGE) {
   if (!message || typeof message !== 'string') return 'unclear';
-  const text = message.trim();
+  const text = normalizeAgeCheckText(message);
+  if (!text) return 'unclear';
 
   if (
     detectsUnderage(text, legalAge) ||

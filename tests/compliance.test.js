@@ -15,6 +15,13 @@ describe('BC compliance layer', () => {
   test('detects underage tripwire phrases', () => {
     assert.equal(detectsUnderage('I am 17'), true);
     assert.equal(detectsUnderage("I'm 18"), true);
+    assert.equal(detectsUnderage("I\u2019m 16"), true); // iOS curly apostrophe
+    assert.equal(detectsUnderage("I\u2018m 15"), true);
+    assert.equal(detectsUnderage('Im 16'), true);
+    assert.equal(detectsUnderage('16 years old'), true);
+    assert.equal(detectsUnderage('my age is 16'), true);
+    assert.equal(detectsUnderage('only 16'), true);
+    assert.equal(detectsUnderage('I am under 19'), true);
     assert.equal(detectsUnderage('high school'), true);
     assert.equal(detectsUnderage('my school'), true);
     assert.equal(detectsUnderage('no ID'), true);
@@ -26,7 +33,10 @@ describe('BC compliance layer', () => {
     assert.equal(detectsUnderage('I am a student'), true);
     assert.equal(detectsUnderage("I'm under 21"), true);
     assert.equal(detectsUnderage("I'm in high school"), true);
+    assert.equal(detectsUnderage('too young'), true);
     assert.equal(detectsUnderage('I like mango ice'), false);
+    assert.equal(detectsUnderage('I am 25'), false);
+    assert.equal(detectsUnderage("I'm 19"), false);
   });
 
   test('interprets age replies', () => {
@@ -34,6 +44,7 @@ describe('BC compliance layer', () => {
     assert.equal(interpretAgeReply('I am 25'), 'yes');
     assert.equal(interpretAgeReply('no'), 'no');
     assert.equal(interpretAgeReply('I am 17'), 'no');
+    assert.equal(interpretAgeReply("I\u2019m 16"), 'no');
     assert.equal(interpretAgeReply('maybe'), 'unclear');
   });
 
